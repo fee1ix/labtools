@@ -156,7 +156,7 @@ class LabHandler(object):
         return
 
     def get_config(self):
-        config_dict=dict()
+        config_dict=dict()# hello
 
         for k in self._config_key_order:
             if k in config_dict: continue
