@@ -61,6 +61,29 @@ def getattr_or_key(obj, key, val=None):
 
     return val
 
+def invoke_dict_callable(the_dict: dict, callable_name: str) -> dict:
+
+    def _recursive(data, callable_name):
+        if isinstance(data, dict):  # If it's a dictionary, process each key-value pair
+            return {key: _recursive(value, callable_name) for key, value in data.items()}
+        
+        elif isinstance(data, list):  # If it's a list, process each element
+            return [_recursive(item, callable_name) for item in data]
+
+        elif hasattr(data, callable_name):  
+            attr = getattr(data, callable_name)
+            if callable(attr):  # If it's a method, call it
+                return attr()
+            else:  # If it's an attribute (like __dict__), return it directly
+                return attr
+            
+        return data
+
+    return _recursive(the_dict, callable_name)  # Otherwise, return as is
+
+
+
+
 def filter_dict_valuetypes(the_dict, valuetypes=[], invert=False):
 
     if (dict in valuetypes) and not invert: valuetypes.remove(dict)
@@ -74,9 +97,17 @@ def filter_dict_valuetypes(the_dict, valuetypes=[], invert=False):
 
             if isinstance(v, tuple(valuetypes)) ^ invert:
                 new_dict[k]=v
-                
+
             elif isinstance(v, dict) and not invert:
-                new_dict[k] = _recursive(v)
+                    new_dict[k] = _recursive(v)
+            
+            val=new_dict.get(k,{})
+            if isinstance(val, (dict, list)) and (len(val)==0):
+                new_dict.pop(k,None)
+
+            # elif isinstance(v, list) and list in valuetypes and not invert:
+            #     # Process list elements individually
+            #     new_dict[k] = [item for item in v if isinstance(item, tuple(valuetypes))]
             
         return new_dict
     
