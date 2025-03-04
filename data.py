@@ -5,19 +5,26 @@ from datasets import Dataset
 
 from labtools import *
 
-class DataHandle(object):
+class Datahandle(object):
 
-    def __init__(self, ref=None, df:pd.DataFrame=None, remarks:str=None, lab_handler=LabHandler(), **kwargs):
+    def __init__(
+            self,
+            ref=None,
+            label:str=None,
+            remarks:str=None,
+            data:Union[pd.DataFrame, Dataset]=None,
+            labh=Labhandler(),
+            **kwargs):
 
         self.remarks=remarks
 
-        if lab_handler is not None:
-            self.lab=lab_handler
-            self.lab.attach(locals())
+        if labh is not None:
+            self.labh=labh
+            self.labh.attach(locals())
 
         
-        if isinstance(df, pd.DataFrame):
-            self.df = df
+        if isinstance(data, pd.DataFrame):
+            self.df = data
 
         elif Path(f"{self._path}/df.pkl").exists():
             self.df = pd.read_pickle(f"{self._path}/df.pkl")

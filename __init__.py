@@ -10,33 +10,35 @@ from typing import Optional, Union
 from labtools.directory_utils import *
 from labtools.dictionary_utils import *
 
+
 LAB_SUFFIX='_lab'
 
-#def init_from_model(model):
 
-
-
-def is_lab_config(config_dict):
-    if not isinstance(config_dict, dict): return False
+def is_labhandler_dict(the_dict):
+    if not isinstance(the_dict, dict): return False
 
     required_keys=['id','lab_name','class_parts', 'module_path']
-    if all([key in config_dict for key in required_keys]):
+    if all([key in the_dict for key in required_keys]):
         return True
     return False
 
-def is_lab_object(obj):
-    if not hasattr(obj, '__dict__'): return False
-    return is_lab_config(obj.__dict__)
+def is_labhandler_object(the_object):
+    if not hasattr(the_object, '__dict__'): return False
+    return is_labhandler_dict(the_object.__dict__)
 
-def is_lab_ref(ref):
-    if isinstance(ref, dict): return is_lab_config(ref)
-    else: return is_lab_object(ref)
+def is_labhandler(ref):
+    if is_labhandler_dict(ref): return True
+    if is_labhandler_object(ref): return True
     return False
 
+def is_datahandle(ref):
 
+    if is_labhandler_dict(ref) and ('Datahandle' in ref['class_parts']): return True
+    elif is_labhandler_object(ref) and ('Datahandle' in ref.__dict__['class_parts']): return True
+    return False
 
-def init_from_config(config_dict):
-    assert is_lab_config(config_dict), f"Invalid config_dict: {config_dict}"
+def init_from_dict(config_dict):
+    assert is_labhandler_dict(config_dict), f"Invalid config_dict: {config_dict}"
 
     class_name=config_dict['class_parts'][-1]
     if class_name not in globals(): 
@@ -47,21 +49,27 @@ def init_from_config(config_dict):
 
     print(f"{config_dict=}")
 
-    if 'DataHandle' in config_dict['class_parts']:
+    if 'Datahandle' in config_dict['class_parts']:
         return class_obj.df
     else:
         class_obj
 
 def init_from_object(obj):
-    assert is_lab_object(obj), f"Invalid object: {obj}"
+    assert is_labhandler_object(obj), f"Invalid object: {obj}"
     return obj
 
 def init_from_ref(ref):
-    assert is_lab_ref(ref), f"Invalid ref: {ref}"
-    if isinstance(ref, dict): return init_from_config(ref)
-    else: return init_from_object(ref)
+    obj=None
+    if is_labhandler_dict(ref):
+        obj=init_from_dict(ref)
+    
+    elif is_labhandler_object(ref):
+        obj=init_from_object(ref)
 
-
+    if is_datahandle(ref):
+        return obj.df
+    
+    return obj
 
 def get_class_parts(the_class):
     if not isinstance(the_class, type): the_class=the_class.__class__
@@ -74,7 +82,7 @@ def import_class(module_path: str, class_name: str):
     the_class = getattr(module, class_name)  # Get the_class from module
     globals()[class_name] = the_class  # Define the_class in global namespace
 
-class LabHandler(object):
+class Labhandler(object):
     logger = logging.getLogger(__name__)
 
     def load_lab(self, path:str=None) -> None:
@@ -90,56 +98,49 @@ class LabHandler(object):
                 self.lab_name = path_part
                 continue
         return
-    
-    def load_ref(self, ref=None, obj=None) -> None:
+
+    def load_ref(self, ref=None, obj=None, label:str=None) -> None:
 
         self.class_parts=get_class_parts(obj)
         self.module_path=obj.__module__
 
-        class_path=(Path(self.lab_name)/Path(*self.class_parts)).as_posix()
-        _class_path=(Path(self._root_path)/Path(class_path)).as_posix()
-        os.makedirs(_class_path, exist_ok=True)
+        self.class_path=(Path(self.lab_name)/Path(*self.class_parts)).as_posix()
+        self._class_path=(Path(self._root_path)/Path(self.class_path)).as_posix()
+        os.makedirs(self._class_path, exist_ok=True)
 
-        if isinstance(ref, dict):
+        #Retrieve ID
+        if is_labhandler_dict(ref):
+            self.id=ref.pop('id')
             self.update_config(ref)
-        
+
         elif isinstance(ref, (int, type(None))):
 
             if ref == -1:
-                self.id=get_max_id(_class_path)
+                self.id=get_max_id(self._class_path)
 
             elif isinstance(ref, int): self.id=ref
+            else: self.id=get_max_id(self._class_path)+1
 
-            else: self.id=get_max_id(_class_path)+1
+        if self.is_spawned: #update label if it was renamed
+            fn=get_filename_from_id(self._class_path, self.id, warn=True)
+            label=re.match(ID_PATTERN, fn).group(2)
 
-            self.name=f"{self.id:04d}_{self.class_parts[-1]}"
-            self.path=(Path(class_path)/Path(self.name)).as_posix()
-        
-        self._path=(Path(_class_path)/Path(self.name)).as_posix()
+        self.label = label or self.class_parts[-1]
+        self._name=f"{self.id:04d}_{self.label}"
 
         if self.is_spawned:
-            self.logger.debug(f"Loading {self.name} from {self._path}")
-            config_path=(Path(self._path)/Path('config.yaml'))
+            config_dict = get_yaml(f"{self._path}/config.yaml")
+            config_dict = update_dict(config_dict, self.config, overwrite_if_conflict=True, interpret_none_as_val=True)
+            self.update_config(config_dict)
+            self.spawn_config()
 
-            if config_path.exists():
-                config_dict=get_yaml(config_path)
-                self.update_config(config_dict)
-            else:
-                warnings.warn(f"config.yaml not found in {self._path}")
-
-        else:
-            self.logger.debug(f"Creating {self.name} at {self._path}")
-            #os.makedirs(self._path, exist_ok=True)
-        
-    def __init__(self, obj=None, ref=None, lab_path:str=None):
+    def __init__(self, ref=None, obj=None, lab_path:str=None, **kwargs):
         self.load_lab(lab_path)
 
-        self._config_key_order = ['id','name', 'lab_name','class_parts','module_path','path']
-        self._attach_methods = ['get_config', 'spawn', 'spawn_config','update_config']
-        self._config_exclude_keys = ['lab']+self._attach_methods
+        self._config_key_order = ['id','label', 'lab_name','class_parts','module_path','path']
+        self._attach_methods = ['get_config', 'spawn', 'spawn_config','update_config','config','is_spawned','_path']
+        self._config_exclude_keys = ['labh','class_path']+self._attach_methods
 
-        if obj is not None:	self.load_ref(ref, obj)
-    
     def update_config(self, mixin_dict, overwrite_if_conflict=True, interpret_none_as_val=True):
         
         #self.logger.debug(f"mixin_dict: {mixin_dict}")
@@ -156,7 +157,7 @@ class LabHandler(object):
         return
 
     def get_config(self):
-        config_dict=dict()# hello
+        config_dict=dict()
 
         for k in self._config_key_order:
             if k in config_dict: continue
@@ -166,8 +167,9 @@ class LabHandler(object):
         further_items=filter_dict_keylist(further_items, self._config_exclude_keys, invert=True)
         further_items=invoke_dict_callable(further_items, 'get_config')
         further_items=invoke_dict_callable(further_items, '__dict__')
-        further_items=filter_dict_valuetypes(further_items,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
         further_items=filter_dict_keypatterns(further_items, [r'^_'], invert=True)
+        further_items=filter_dict_valuetypes(further_items,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
+
         config_dict.update(further_items)
 
         return config_dict
@@ -175,62 +177,89 @@ class LabHandler(object):
     @property
     def config(self):
         return self.get_config()
-    
+
+    @property
+    def _path(self):
+
+        fn = get_filename_from_id(self._class_path, self.id, warn=False)
+        fn = fn or self._name
+
+        return f"{self._class_path}/{fn}"
+
     @property
     def is_spawned(self):
-        return os.path.exists(f'{self._path}')
+        fn=get_filename_from_id(self._class_path, self.id, warn=False)
+        return bool(fn)
+        #return os.path.exists(f'{self._path}')
 
     def spawn_config(self):
-
         os.makedirs(self._path, exist_ok=True)
-        config_dict=self.get_config()
-        _config_path=(Path(self._path)/Path('config.yaml')).as_posix()
-        set_yaml(config_dict, _config_path)
-        
+        set_yaml(self.config,f"{self._path}/config.yaml")
+
     def spawn(self):
         self.spawn_config()
 
-    def get_init_objects(self, locals, keys:list = None) -> list:
-        if keys is None: return 
+    def get_initialized_objects(self, locals, var_names:list = None) -> list:
+        """
+        Tries to initialize lab objects and returns them as list.
 
-        init_objects=[None]*len(keys)
-        for i,key in enumerate(keys):
+        Args:
+            locals: Dictionary containing the local variables of the calling function.
+            var_names: List of variable names to be initialized.
+        
+        Returns:
+            List of initialized objects.
+        """
+
+        self.logger.debug(f"{var_names=}")
+        init_objs=[None]*len(var_names)
+
+        for i,var_name in enumerate(var_names):
+            self.logger.debug(f"{var_name=}")
             
-            if not key in locals: 
-                warnings.warn(f"{key} not found in locals.")
-                continue
-            init_objects[i]=locals[key]
+            # if not var_name in locals: 
+            #     warnings.warn(f"'{var_name}' not found in locals.")
+            #     continue
 
-            if key not in self.config:
-                if self.is_spawned:
-                    warnings.warn(f"{key} not found in config.")
-                continue
-            init_objects[i]=self.config[key]
+            # if var_name not in self.config:
+            #     if self.is_spawned:
+            #         warnings.warn(f"{var_name} not found in config.")
+            
+            init_objs[i] = self.config.get(var_name, None) or locals.get(var_name, None)
 
-            if isinstance(init_objects[i], list) and all([is_lab_ref(v) for v in init_objects[i]]):
-                init_objects[i]=[init_from_ref(v) for v in init_objects[i]]
-            elif is_lab_ref(init_objects[i]):
-                init_objects[i]=init_from_ref(init_objects[i])
-            else: 
-                warnings.warn(f"{key}:{init_objects[i]} is no valid lab config.")
+            if isinstance(init_objs[i], list) and all([is_labhandler(v) for v in init_objs[i]]):
+                init_objs[i]=[init_from_ref(v) for v in init_objs[i]]
 
-        return init_objects
+            elif is_labhandler(init_objs[i]):
+                init_objs[i]=init_from_ref(init_objs[i])
+
+            else:
+                warnings.warn(f"{var_name}:{init_objs[i]} is no valid labhandler.")
+            
+            self.logger.debug(f"{var_name}:{init_objs[i]}")
+
+            
+        self.logger.debug(f"{init_objs=}")
+
+        return init_objs
     
-    def attach(self, locals, preinit_keys:list = None, **kwargs):
+    def attach(self, locals: dict, var_names:list = None, **kwargs):
         """
         Attach lab attributes to target object.
         locals: dict
             Dictionary containing the local variables of the calling function.
-        preinit_keys: list
+        var_names: list
             List of keys to be preloaded from locals.
         kwargs: dict
         """
 
-        del locals['lab_handler']
+        del locals['labh']
         obj=locals.pop('self', None)
         ref=locals.pop('ref', None)
+        #search for label in locals, kwargs, and kwargs['kwargs']
+        label=(locals.pop('label', None)) or (locals.get('kwargs',{}).get('label', None)) or (kwargs.get('label', None))
 
-        self.load_ref(ref, obj)
+        self.load_ref(ref, obj, label)
 
         #Attach Lab Attributes to target object
         for k,v in vars(self).items(): setattr(obj, k, v)
@@ -240,14 +269,17 @@ class LabHandler(object):
             if hasattr(obj, method_name): continue #method already exists --> do not overwrite it!
 
             method = getattr(self.__class__, method_name, None)
+
+            if isinstance(method, property):
+                setattr(obj.__class__, method_name, method)
+
             if callable(method):
                 setattr(obj, method_name, MethodType(method, obj))
 
-        if preinit_keys is not None:
-            return self.get_init_objects(locals, preinit_keys)
-        
-        else:
-            return
+
+        if var_names is not None:
+            return self.get_initialized_objects(locals, var_names)
+        return
   
 
 
