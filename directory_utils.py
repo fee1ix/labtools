@@ -40,7 +40,6 @@ def get_filename_from_id(path, id: int, id_pattern=ID_PATTERN, warn=True):
     
     return None
 
-
 def get_config(path=None, id:int=None) -> dict:
     if path is None: path=os.getcwd()
     path=Path(path)
@@ -51,8 +50,6 @@ def get_config(path=None, id:int=None) -> dict:
             path = path/fn
     
     return get_yaml(path/'config.yaml')
-    
-
 
 def get_ids(path=None, from_id=0, to_id=10e9, id_pattern=ID_PATTERN):
 
@@ -73,3 +70,20 @@ def get_max_id(path):
     id_list = get_ids(path)
     if id_list: max_id = max(id_list)
     return max_id
+
+def find_path_to(target_name, base_path=os.getcwd()):
+    for root, dirs, files in os.walk(base_path):
+        if target_name in dirs+files:
+            return os.path.join(root, target_name)
+    return None
+
+def find_matching_paths(target_pattern=ID_PATTERN, base_path:str=os.getcwd()):
+    paths = []
+    regex = re.compile(target_pattern)  # Compile the regex pattern
+
+    for root, dirs, files in os.walk(base_path):
+        for dir_name in dirs+files:
+            if regex.search(dir_name):  # Check if directory name matches pattern
+                paths.append(os.path.join(root, dir_name))
+
+    return paths

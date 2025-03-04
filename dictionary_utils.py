@@ -2,6 +2,12 @@ import re
 import copy
 import logging
 
+def split_keypath(keypath):
+    if isinstance(keypath,str):
+        keypath_list=re.split(r'[\./]',keypath)
+    elif isinstance(keypath,list):
+        keypath_list=keypath
+    return keypath_list
 
 def is_nested_dict(a_dict):
     return any(isinstance(v, dict) for v in a_dict.values())
@@ -80,8 +86,6 @@ def invoke_dict_callable(the_dict: dict, callable_name: str) -> dict:
         return data
 
     return _recursive(the_dict, callable_name)  # Otherwise, return as is
-
-
 
 
 def filter_dict_valuetypes(the_dict, valuetypes=[], invert=False):

@@ -3,21 +3,24 @@ import logging
 import warnings
 import importlib
 
+import pandas as pd
+
 from types import MethodType
 from functools import partial
 from typing import Optional, Union
 
 from labtools.directory_utils import *
+from labtools.directory_utils import find_path_to
+
 from labtools.dictionary_utils import *
 
 
 LAB_SUFFIX='_lab'
 
-
 def is_labhandler_dict(the_dict):
     if not isinstance(the_dict, dict): return False
 
-    required_keys=['id','lab_name','class_parts', 'module_path']
+    required_keys=['id','label','lab_name','class_parts', 'module_path']
     if all([key in the_dict for key in required_keys]):
         return True
     return False
@@ -48,8 +51,7 @@ def init_from_dict(config_dict):
     class_obj=the_class(config_dict)
 
     print(f"{config_dict=}")
-
-    if 'Datahandle' in config_dict['class_parts']:
+    if 'Datahandle' in config_dict.get('class_parts',[]):
         return class_obj.df
     else:
         class_obj
@@ -98,23 +100,37 @@ class Labhandler(object):
                 self.lab_name = path_part
                 continue
         return
+    
+    def load_from_object(self, the_object:object) -> None:
+        self.class_parts=get_class_parts(the_object)
+        self.module_path=getattr(the_object,'__module__', None)
+    
+    def load_from_dict(self, the_dict: dict) -> None:
+        if not is_labhandler_dict(the_dict): return 
 
-    def load_ref(self, ref=None, obj=None, label:str=None) -> None:
+        self.id=the_dict.pop('id')
+        self.class_parts=the_dict.pop('class_parts')
+        self.module_path=the_dict.pop('module_path')
+        self.update_config(the_dict)
 
-        self.class_parts=get_class_parts(obj)
-        self.module_path=obj.__module__
+    def load_from_path(self, path: Union[str, Path]) -> None:
+        the_dict = get_yaml(Path(path)/'config.yaml')
+        self.load_from_dict(the_dict)
+    
+    def load(self, ref=None, obj=None, label:str=None, **kwargs) -> None:
 
-        self.class_path=(Path(self.lab_name)/Path(*self.class_parts)).as_posix()
-        self._class_path=(Path(self._root_path)/Path(self.class_path)).as_posix()
-        os.makedirs(self._class_path, exist_ok=True)
+        if obj is not None: self.load_from_object(obj)
 
-        #Retrieve ID
-        if is_labhandler_dict(ref):
-            self.id=ref.pop('id')
-            self.update_config(ref)
+        if isinstance(ref, (str, Path)):
+            self.load_from_path(ref)
 
-        elif isinstance(ref, (int, type(None))):
+        elif is_labhandler_dict(ref): 
+            self.load_from_dict(ref)
 
+        if isinstance(ref, (int, type(None))):
+
+            os.makedirs(self._class_path, exist_ok=True)
+            
             if ref == -1:
                 self.id=get_max_id(self._class_path)
 
@@ -123,9 +139,9 @@ class Labhandler(object):
 
         if self.is_spawned: #update label if it was renamed
             fn=get_filename_from_id(self._class_path, self.id, warn=True)
-            label=re.match(ID_PATTERN, fn).group(2)
+            label=label or re.match(ID_PATTERN, fn).group(2)
 
-        self.label = label or self.class_parts[-1]
+        self.label = label or getattr(self, 'label', None) or self.class_parts[-1]
         self._name=f"{self.id:04d}_{self.label}"
 
         if self.is_spawned:
@@ -138,8 +154,67 @@ class Labhandler(object):
         self.load_lab(lab_path)
 
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path','path']
-        self._attach_methods = ['get_config', 'spawn', 'spawn_config','update_config','config','is_spawned','_path']
-        self._config_exclude_keys = ['labh','class_path']+self._attach_methods
+        self._invoke_keys=[]
+        self._attach_methods = ['get_overview','get_config', 'spawn', 'spawn_config','update_config','config','is_spawned','_path','_class_path']
+        self._config_exclude_keys = ['labh','class_path','logger','df','model']+self._attach_methods
+
+        if ref is not None:
+            self.load(ref, obj, **kwargs)
+
+    def get_overview(self, keypaths:list=[]) -> pd.DataFrame:
+
+        matching_paths=find_matching_paths(target_pattern=ID_PATTERN, base_path=self._class_path)
+
+        overview_data=[]
+        for path in matching_paths:
+            labh=Labhandler(path)
+
+            overview_row=dict()
+            overview_row['class_parts']=labh.class_parts
+            overview_row['id']=labh.id
+            overview_row['label']=labh.label
+
+            config_dict=labh.config
+            for keypath in keypaths:
+
+                value=None
+                keypath_list=split_keypath(keypath)
+
+                if keypath in config_dict.keys():
+                    value=config_dict[keypath]
+
+                elif len(keypath_list)==1:
+                    ambiguous_keypaths = get_dict_keypaths(config_dict, keypath_list[0])
+
+                    if len(ambiguous_keypaths)==1:
+                        value=get_dict_value_from_keypath(config_dict, ambiguous_keypaths[0])
+
+                    elif len(ambiguous_keypaths)>1:
+
+                        ambiguous_values=[]
+                        for ambiguous_keypath in ambiguous_keypaths:
+                            ambiguous_values.append(get_dict_value_from_keypath(config_dict, ambiguous_keypath))
+                        
+                        if len(set(ambiguous_values))==1:
+                            value=ambiguous_values[0]
+                        else:
+                            logging.warning(f"Multiple values found for '{keypath}' in config_dict: {ambiguous_values}")
+
+                elif has_keypath(config_dict, keypath_list):
+                    value=get_dict_value_from_keypath(config_dict, keypath_list)
+
+
+                if value is not None:
+                    for i in range(1,len(keypath_list)+1):
+                        keypath_str='.'.join(keypath_list[len(keypath_list)-i:])
+                        if keypath_str not in overview_row.keys():
+                            break
+                    
+                    overview_row[keypath_str]=value
+
+            overview_data.append(overview_row)
+
+        return pd.DataFrame(overview_data)
 
     def update_config(self, mixin_dict, overwrite_if_conflict=True, interpret_none_as_val=True):
         
@@ -165,13 +240,19 @@ class Labhandler(object):
 
         further_items=self.__dict__
         further_items=filter_dict_keylist(further_items, self._config_exclude_keys, invert=True)
-        further_items=invoke_dict_callable(further_items, 'get_config')
-        further_items=invoke_dict_callable(further_items, '__dict__')
         further_items=filter_dict_keypatterns(further_items, [r'^_'], invert=True)
+
+        for key in self._invoke_keys:
+            if key not in further_items: continue
+            val=further_items[key]
+            val=invoke_dict_callable(val, 'get_config')
+            val=invoke_dict_callable(val, '__dict__')
+            further_items[key]=val
+
         further_items=filter_dict_valuetypes(further_items,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
+        further_items=filter_dict_values(further_items, [None], invert=True)
 
         config_dict.update(further_items)
-
         return config_dict
 
     @property
@@ -179,12 +260,20 @@ class Labhandler(object):
         return self.get_config()
 
     @property
+    def class_path(self):
+        return (Path(self.lab_name)/Path(*self.class_parts)).as_posix()
+
+    @property
+    def _class_path(self):
+        return (Path(self._root_path)/Path(self.lab_name)/Path(*self.class_parts)).as_posix()
+
+    @property
     def _path(self):
 
         fn = get_filename_from_id(self._class_path, self.id, warn=False)
         fn = fn or self._name
 
-        return f"{self._class_path}/{fn}"
+        return (Path(self._class_path)/fn).as_posix()
 
     @property
     def is_spawned(self):
@@ -211,20 +300,9 @@ class Labhandler(object):
             List of initialized objects.
         """
 
-        self.logger.debug(f"{var_names=}")
         init_objs=[None]*len(var_names)
 
         for i,var_name in enumerate(var_names):
-            self.logger.debug(f"{var_name=}")
-            
-            # if not var_name in locals: 
-            #     warnings.warn(f"'{var_name}' not found in locals.")
-            #     continue
-
-            # if var_name not in self.config:
-            #     if self.is_spawned:
-            #         warnings.warn(f"{var_name} not found in config.")
-            
             init_objs[i] = self.config.get(var_name, None) or locals.get(var_name, None)
 
             if isinstance(init_objs[i], list) and all([is_labhandler(v) for v in init_objs[i]]):
@@ -233,13 +311,10 @@ class Labhandler(object):
             elif is_labhandler(init_objs[i]):
                 init_objs[i]=init_from_ref(init_objs[i])
 
-            else:
-                warnings.warn(f"{var_name}:{init_objs[i]} is no valid labhandler.")
+            # else:
+            #     warnings.warn(f"{var_name}:{init_objs[i]} is no valid labhandler.")
             
             self.logger.debug(f"{var_name}:{init_objs[i]}")
-
-            
-        self.logger.debug(f"{init_objs=}")
 
         return init_objs
     
@@ -256,13 +331,21 @@ class Labhandler(object):
         del locals['labh']
         obj=locals.pop('self', None)
         ref=locals.pop('ref', None)
+        locals_kwargs=locals.pop('kwargs', None)
         #search for label in locals, kwargs, and kwargs['kwargs']
-        label=(locals.pop('label', None)) or (locals.get('kwargs',{}).get('label', None)) or (kwargs.get('label', None))
+        label=(locals.pop('label', None)) or (locals_kwargs.get('label', None)) or (kwargs.get('label', None))
 
-        self.load_ref(ref, obj, label)
+        self._invoke_keys=list(locals.keys()) # keys to be invoked in get_config/__dict__ -> better for displaying in yaml
+        self.load(ref, obj, label)
+
+        #Attach Locals to target object
+        for k,v in locals.items(): setattr(obj, k, v)
 
         #Attach Lab Attributes to target object
-        for k,v in vars(self).items(): setattr(obj, k, v)
+        for k,v in vars(self).items():
+            if (k in locals): continue
+            setattr(obj, k, v)
+        setattr(obj, 'logger', self.logger)
 
         for method_name in self._attach_methods:
 
@@ -275,7 +358,6 @@ class Labhandler(object):
 
             if callable(method):
                 setattr(obj, method_name, MethodType(method, obj))
-
 
         if var_names is not None:
             return self.get_initialized_objects(locals, var_names)
