@@ -2,8 +2,11 @@
 import logging
 import pandas as pd
 from datasets import Dataset
+from typing import Union
 
-from labtools import *
+
+from labtools.labhandler import Labhandler
+from labtools.directory_utils import *
 
 class Datahandle(object):
 
@@ -12,7 +15,7 @@ class Datahandle(object):
             ref=None,
             label:str=None,
             remarks:str=None,
-            data:Union[pd.DataFrame, Dataset]=None,
+            df:pd.DataFrame=None,
             labh=Labhandler(),
             **kwargs):
 
@@ -20,11 +23,11 @@ class Datahandle(object):
 
         if labh is not None:
             self.labh=labh
-            self.labh.attach(locals())
+            self.labh.attach_parent(locals())
 
         
-        if isinstance(data, pd.DataFrame):
-            self.df = data
+        if isinstance(df, pd.DataFrame):
+            self.df = df.copy(); del df
 
         elif Path(f"{self._path}/df.pkl").exists():
             self.df = pd.read_pickle(f"{self._path}/df.pkl")
