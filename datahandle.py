@@ -8,6 +8,20 @@ from typing import Union
 from labtools.labhandler import Labhandler
 from labtools.directory_utils import *
 
+# class Filehandle(object):
+
+#     def __init__(
+#             self,
+#             ref=None,
+#             label:str=None,
+#             remarks:str=None,
+#             labh=Labhandler(),
+#             **kwargs):
+    
+
+    
+
+
 class Datahandle(object):
 
     def __init__(
@@ -34,14 +48,12 @@ class Datahandle(object):
         
         if hasattr(self, 'df'):
             self.n_rows = len(self.df)
-            self.columns = self.df.columns
+            self.columns = ', '.join(list(self.df.columns))
         
-        self.n_rows = len(self.df)
-        self.columns = list(self.df.columns)
 
     
-    def spawn(self):
-        self.spawn_config()
+    def save(self):
+        self.save_config()
         self.df.to_pickle(f"{self._path}/df.pkl")
         
 
