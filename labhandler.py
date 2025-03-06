@@ -61,8 +61,25 @@ def init_from(the_input):
     return the_object
 
 
+def is_local(the_input):
+    if not isinstance(the_input, dict): return False
+    required_keys=['type','filename']
+    if all([key in the_input for key in required_keys]): return True
+    return False
+
+
+def load_local_from_dict(local_dict:dict, path:str=''):
+    if local_dict['type'].endswith('DataFrame'):
+        return pd.read_pickle((Path(path)/local_dict['filename']).as_posix())
+
+def save_local(the_object, filename:str, path:str='', **kwargs):
+
+    if isinstance(the_object, pd.DataFrame):
+        the_object.to_pickle((Path(path)/filename).as_posix())
+    
 def get_local_dict_from_object(the_object:object, var_name:str, **kwargs):
     local_dict=dict()
+    local_dict['type']=type(the_object)
 
     if is_datahandle(the_object):
         kwargs=update_dict(kwargs, the_object.config, overwrite_if_conflict=False, interpret_none_as_val=True)
@@ -84,7 +101,6 @@ def get_global_dict_from_object(the_object, **kwargs):
     the_object.update_config(kwargs)
 
     return the_object.get_config()
-
 
 def get_dict_from_object(the_object:object, var_name:str, save_local:bool=False, save_global:bool=False, **kwargs):
 
@@ -111,13 +127,10 @@ def get_dict_from_object(the_object:object, var_name:str, save_local:bool=False,
 
         return the_dict
 
-
-
 def get_class_parts(the_class):
     if not isinstance(the_class, type): the_class=the_class.__class__
     class_parts=[c.__name__ for c in the_class.mro()[:-1]][::-1]
     return class_parts
-
 
 def import_class(module_path: str, class_name: str):
     """Dynamically imports a class and defines it in the current namespace."""
@@ -301,9 +314,14 @@ class Labhandler(object):
         return
 
     def save_config(self):
-        
         set_yaml(self.config,f"{self._path}/config.yaml")
     
+
+    def save_locals(self):
+
+        for key, val in self.config.items():
+            if is_local()
+
     # def update_from_parent(self):
     #     if hasattr(self, 'labh'):
     #         for k,v in vars(self).items():
@@ -363,9 +381,15 @@ class Labhandler(object):
         return init_objs
     
 
-    def handle_object(self, locals:dict, var_name:str, save_local:bool=False, save_global:bool=False,  **kwargs):
-        the_object = locals.pop(var_name, None); del locals
+    def handle_object(self, locals:dict, var_name:str, save_local:bool=False, save_global:bool=False, **kwargs):
 
+        the_object=locals.pop(var_name, None); del locals
+        if the_object is None:
+            the_object=self.config.get(var_name, None)
+        if the_object is None:
+            warnings.warn(f"{var_name} is None.")
+
+        
         if isinstance(the_object, list):
             pop_len=len(self._handled_objects)
             the_object=[self.handle_object({var_name: v}, var_name, save_local, save_global, **kwargs) for v in the_object]
@@ -376,9 +400,15 @@ class Labhandler(object):
             if the_object.is_saved and save_global:
                 warnings.warn(f"{var_name} is already saved globally. Setting save_global to False.")
                 save_global=False
+            
+            the_object=init_from(the_object)
 
             if is_datahandle(the_object):
-                the_object=init_from(the_object).df
+                the_object=the_object.df
+
+        elif is_local(the_object):
+            save_local = False
+            the_object=load_local_from_dict(the_object, self._path)
         
         else:
             if save_global:
