@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import warnings
 import importlib
@@ -9,134 +10,165 @@ from types import MethodType
 from functools import partial
 from typing import Optional, Union
 
+from labtools.system_utils import TIMESTAMP_FORMAT, get_datetime
+
 from labtools.directory_utils import *
 from labtools.dictionary_utils import *
 
 LAB_SUFFIX='_lab'
+LABH_FILE_KEYS=['type','filename']
+LABH_LOCAL_KEYS=['class_parts','module_path']
+LABH_GLOBAL_KEYS=['id','label','lab_name','class_parts','module_path']
 
-def is_labhandler_dict(the_dict):
-    if not isinstance(the_dict, dict): return False
+def is_empty(x):
 
-    required_keys=['id','label','lab_name','class_parts', 'module_path']
-    if all([key in the_dict for key in required_keys]):
-        return True
-    return False
-
-def is_labhandler_object(the_object):
-    if not hasattr(the_object, '__dict__'): return False
-    return is_labhandler_dict(the_object.__dict__)
-
-def is_labhandler(the_input):
-    if is_labhandler_dict(the_input): return True
-    if is_labhandler_object(the_input): return True
-    return False
-
-def is_datahandle(the_input):
-
-    if is_labhandler_dict(the_input) and ('Datahandle' in the_input['class_parts']): return True
-    elif is_labhandler_object(the_input) and ('Datahandle' in the_input.__dict__['class_parts']): return True
-    return False
-
-def init_from_object(the_object):
-    return the_object
-
-def init_from_dict(the_dict):
-    class_name=the_dict['class_parts'][-1]
-    if class_name not in globals(): 
-        import_class(the_dict['module_path'], class_name)
-    
-    the_class=globals()[class_name]
-    the_object=the_class(the_dict)
-
-    return the_object
-
-def init_from(the_input):
-    the_object=the_input
-    if is_labhandler_dict(the_input):
-        the_object=init_from_dict(the_input)
-    
-    elif is_labhandler_object(the_input):
-        the_object=init_from_object(the_input)
-
-    return the_object
+    if x is None: return True
+    if isinstance(x, pd.DataFrame): return x.empty
+    if isinstance(x, (list, tuple, set, dict)): return len(x)==0
+    return not bool(x)
 
 
-def is_local(the_input):
+def is_labh_dict(the_input, required_keys=LABH_GLOBAL_KEYS) -> bool:
     if not isinstance(the_input, dict): return False
-    required_keys=['type','filename']
     if all([key in the_input for key in required_keys]): return True
     return False
 
+def is_labh_object(the_input, required_keys=LABH_GLOBAL_KEYS) -> bool:
+    if not hasattr(the_input, '__dict__'): return False
+    return is_labh_dict(the_input.__dict__, required_keys)
 
-def load_local_from_dict(local_dict:dict, path:str=''):
-    if local_dict['type'].endswith('DataFrame'):
-        return pd.read_pickle((Path(path)/local_dict['filename']).as_posix())
+def is_labh_reference(the_input, required_keys=LABH_GLOBAL_KEYS) -> bool:
 
-def save_local(the_object, filename:str, path:str='', **kwargs):
+    if isinstance(the_input, dict): return is_labh_dict(the_input, required_keys)
+    elif hasattr(the_input, '__dict__'): return is_labh_dict(the_input.__dict__, required_keys)
+
+    return False
+
+def is_labh_datahandle_reference(the_input):
+
+    if is_labh_dict(the_input, LABH_LOCAL_KEYS) and ('Datahandle' in the_input['class_parts']): return True
+    elif is_labh_object(the_input, LABH_LOCAL_KEYS) and ('Datahandle' in the_input.__dict__['class_parts']): return True
+    return False
+
+
+def init_from_labh_object(the_object):
+    return the_object
+
+def init_from_labh_dict(the_dict):
+    assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
+    class_name=the_dict['class_parts'][-1]
+
+    #[k for k,v in globals().items() if (v is not None) and ('LLMPipeline' in str(k))]
+
+    if class_name not in globals():
+        the_class = get_class(class_name,the_dict['module_path'])
+        logging.debug(f"get {class_name} from {the_dict['module_path']} {id(the_class)=}")
+    else: 
+        the_class = globals()[class_name]
+        logging.debug(f"use {class_name} from globals() as {the_class} {id(the_class)=}")
+
+    the_object=the_class(**the_dict)
+    return the_object
+
+def init_from_labh_reference(the_input):
+    """
+    Initializes a labhandler attached object from a dictionary or an object reference.
+    """
+    the_object=the_input
+    if is_labh_dict(the_input, LABH_LOCAL_KEYS):
+        the_object=init_from_labh_dict(the_input)
+    
+    return the_object
+
+
+def load_labh_file_from_dict(the_dict:dict, path:str=''):
+    assert is_labh_dict(the_dict, LABH_FILE_KEYS), f"{the_dict} is not a valid labhandler file reference."
+
+    if the_dict['type'].endswith('DataFrame'):
+        return pd.read_pickle((Path(path)/the_dict['filename']).as_posix())
+    else:
+        raise NotImplementedError(f"Object of type {the_dict['type']} not supported.")
+
+def save_labh_file(the_object, filename:str, path:str='', overwrite=False, **kwargs):
+    save_path=(Path(path)/filename).as_posix()
+    if os.path.exists(save_path) and not overwrite: return #do not overwrite existing files
 
     if isinstance(the_object, pd.DataFrame):
-        the_object.to_pickle((Path(path)/filename).as_posix())
-    
-def get_local_dict_from_object(the_object:object, var_name:str, **kwargs):
-    local_dict=dict()
-    local_dict['type']=type(the_object)
+        the_object.to_pickle(save_path)
+    else:
+        raise NotImplementedError(f"Object of type {type(the_object)} not supported.")
 
-    if is_datahandle(the_object):
+
+def get_labh_dict_from_file(the_object:object, var_name:str, **kwargs):
+    labh_dict=dict()
+    labh_dict['type']=the_object.__class__.__name__
+
+    if is_labh_datahandle_reference(the_object):
         kwargs=update_dict(kwargs, the_object.config, overwrite_if_conflict=False, interpret_none_as_val=True)
         the_object=the_object.df
 
     if isinstance(the_object, pd.DataFrame):
-        local_dict['filename'] = f"{var_name}.pkl"
-        local_dict['n_rows'] = len(the_object)
-        local_dict['columns'] = ', '.join(list(the_object.columns))
+        labh_dict['filename'] = f"{var_name}.pkl"
+        labh_dict['n_rows'] = len(the_object)
+        labh_dict['columns'] = ', '.join(list(the_object.columns))
     
     else:
         raise NotImplementedError(f"Object of type {type(the_object)} not supported.")
     
-    local_dict=update_dict(local_dict, kwargs, overwrite_if_conflict=False, interpret_none_as_val=True)
-    return local_dict
+    labh_dict=update_dict(labh_dict, kwargs, overwrite_if_conflict=False, interpret_none_as_val=True)
+    return labh_dict 
 
-def get_global_dict_from_object(the_object, **kwargs):
-    assert is_labhandler(the_object), f"{the_object} is not a valid labhandler."
+def get_labh_dict_from_local(the_object:object, var_name:str, **kwargs):
+    labh_dict=dict()
+    labh_dict['class_parts']=get_class_parts(the_object)
+    labh_dict['module_path']=getattr(the_object,'__module__', None)
+
+    if hasattr(the_object, 'get_config'):
+        kwargs=update_dict(kwargs, the_object.get_config(), overwrite_if_conflict=False, interpret_none_as_val=True)
+    elif hasattr(the_object, '__dict__'):
+        kwargs=update_dict(kwargs, the_object.__dict__, overwrite_if_conflict=False, interpret_none_as_val=True)
+
+    labh_dict=update_dict(labh_dict, kwargs, overwrite_if_conflict=False, interpret_none_as_val=True)
+    return labh_dict
+
+def get_labh_dict_from_global(the_object:object, var_name:str, **kwargs):
+    assert is_labh_object(the_object), f"{the_object} is not a valid labhandler object."
     the_object.update_config(kwargs)
 
     return the_object.get_config()
 
-def get_dict_from_object(the_object:object, var_name:str, save_local:bool=False, save_global:bool=False, **kwargs):
+def get_labh_dict_from_object(the_object:object, var_name:str, save_file:bool=False, save_global:bool=False, **kwargs):
 
-    if save_local:
-        return get_local_dict_from_object(the_object, var_name, **kwargs)
+    if save_file:
+        return get_labh_dict_from_file(the_object, var_name, **kwargs)
 
     if save_global:
-        return get_global_dict_from_object(the_object, var_name, **kwargs)
+        return get_labh_dict_from_global(the_object, var_name, **kwargs)
     
-    if not (save_local or save_global):
+    if not (save_file or save_global):
 
         if isinstance(the_object, list):
-            return [get_dict_from_object(v, var_name, save_local, save_global, **kwargs) for v in the_object]
+            return [get_labh_dict_from_object(v, var_name, save_file, save_global, **kwargs) for v in the_object]
 
-        the_dict=dict()
+        return get_labh_dict_from_local(the_object, var_name, **kwargs)
 
-        if hasattr(the_object, 'get_config'):
-            the_dict=the_object.get_config()
-
-        elif hasattr(the_object, '__dict__'):
-            the_dict=the_object.__dict__
-        
-        the_dict=update_dict(the_dict, kwargs, overwrite_if_conflict=True, interpret_none_as_val=True)
-
-        return the_dict
 
 def get_class_parts(the_class):
     if not isinstance(the_class, type): the_class=the_class.__class__
     class_parts=[c.__name__ for c in the_class.mro()[:-1]][::-1]
     return class_parts
 
-def import_class(module_path: str, class_name: str):
-    """Dynamically imports a class and defines it in the current namespace."""
-    module = importlib.import_module(module_path)  # Import module
-    the_class = getattr(module, class_name)  # Get the_class from module
-    globals()[class_name] = the_class  # Define the_class in global namespace
+def get_class(class_name, module_path):
+    """Ensure the class is loaded only once from sys.modules"""
+    
+    if module_path in sys.modules:
+        module = sys.modules[module_path]  # ✅ Get the already loaded module
+    else:
+        module = importlib.import_module(module_path)  # Import only if not in sys.modules
+
+    return getattr(module, class_name)
+
+
 
 class Labhandler(object):
     logger = logging.getLogger(__name__)
@@ -161,7 +193,7 @@ class Labhandler(object):
     
     def load_from_dict(self, the_dict: dict) -> None:
 
-        if not is_labhandler_dict(the_dict):
+        if not is_labh_dict(the_dict):
             return 
 
         self.id=the_dict.pop('id')
@@ -180,7 +212,7 @@ class Labhandler(object):
         if isinstance(ref, (str, Path)):
             self.load_from_path(ref)
 
-        elif is_labhandler_dict(ref): 
+        elif is_labh_dict(ref): 
             self.load_from_dict(ref)
 
         if isinstance(ref, (int, type(None))):
@@ -204,21 +236,19 @@ class Labhandler(object):
         if self.is_saved:
             config_dict = get_yaml(f"{self._path}/config.yaml")
             config_dict = update_dict(config_dict, self.config, overwrite_if_conflict=True, interpret_none_as_val=True)
-            self.logger.debug(f"{config_dict=}")
+            #self.logger.debug(f"{config_dict=}")
             self.update_config(config_dict)
             self.save_config()
 
     def __init__(self, ref=None, obj=None, lab_path:str=None, **kwargs):
         self.load_lab(lab_path)
+        self._datetime_init=get_datetime()
 
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
 
-        self._save_local_keys = []
-        self._save_global_keys = []
-
         self._handled_objects = []
 
-        self._attach_methods_to_parent = ['get_overview','get_config', 'save', 'save_config','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved']
+        self._attach_methods_to_parent = ['get_overview','get_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved']
 
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
@@ -287,15 +317,19 @@ class Labhandler(object):
             if k in config_dict: continue
             if hasattr(self, k): config_dict[k]=getattr(self, k)
 
-        further_items=self.__dict__
-        further_items=filter_dict_keylist(further_items, self._config_exclude_keys, invert=True)
-        further_items=filter_dict_keypatterns(further_items, [r'^_'], invert=True)
-        further_items=filter_dict_valuetypes(further_items,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
-        further_items=filter_dict_values(further_items, [None], invert=True)
-        config_dict.update(further_items)
+        various_dict=self.__dict__
+        various_dict=filter_dict_keypatterns(various_dict, [r'^_'], invert=True)
+
+        handled_keys=[o['var_name'] for o in self._handled_objects]
+        various_dict=filter_dict_keylist(various_dict, handled_keys, invert=True)
+        various_dict=filter_dict_keylist(various_dict, self._config_exclude_keys, invert=True)
+        
+        various_dict=filter_dict_valuetypes(various_dict,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
+        various_dict=filter_dict_values(various_dict, [None], invert=True)
+        config_dict.update(various_dict)
 
         for object_dict in self._handled_objects:
-            config_dict[object_dict['var_name']]=get_dict_from_object(**object_dict)
+            config_dict[object_dict['var_name']]=get_labh_dict_from_object(**object_dict)
 
         return config_dict
 
@@ -316,110 +350,67 @@ class Labhandler(object):
     def save_config(self):
         set_yaml(self.config,f"{self._path}/config.yaml")
     
-
-    def save_locals(self):
-
+    def save_files(self):
         for key, val in self.config.items():
-            if is_local()
-
-    # def update_from_parent(self):
-    #     if hasattr(self, 'labh'):
-    #         for k,v in vars(self).items():
-    #             setattr(self.labh, k, v)
-
-
-    # def save_local_object(self, var_name:str, the_object:object, **kwargs):
-    #     from labtools.datahandle import Datahandle
-
-    #     the_object=getattr(self, var_name, None)
-    #     if the_object is None: warnings.warn(f"{var_name} is None.")
-
-    #     if isinstance(the_object, pd.DataFrame):
-
-
-    #     if is_datahandle(the_object):
-            
-        
-    #     the_object.to_pickle(f"{self._path}/{var_name}.pkl")
-
-
-
+            if is_labh_reference(val, LABH_FILE_KEYS):
+                save_labh_file(the_object=getattr(self,key,None), path=self._path, **val)
 
     def save(self):
         os.makedirs(self._path, exist_ok=True)
 
         self.save_config()
+        self.save_files()
 
-    def get_initialized_objects(self, locals, var_names:list = None) -> list:
+    def handle_object(self, locals:dict, var_name:str, save_file:bool=False, save_global:bool=False, **kwargs):
         """
-        Tries to initialize lab objects and returns them as list.
+        Returns initialized object and saves it if necessary. Should be called after 'attach_parent'!.
 
         Args:
-            locals: Dictionary containing the local variables of the calling function.
-            var_names: List of variable names to be initialized.
-        
-        Returns:
-            List of initialized objects.
+            locals: Dictionary containing the local variables 'locals()' of parents '__init__()'.
+            var_name: Name of the variable to be initialized.
+            save_file: If True, the object is saved locally in the directory of the parent
+            save_global: If True, the object is saved globally as new labhandler instance.. not implemented yet.
+            kwargs: Additional keyword arguments.
         """
 
-        init_objs=[None]*len(var_names)
-
-        for i,var_name in enumerate(var_names):
-            init_objs[i] = self.config.get(var_name, None) or locals.get(var_name, None)
-
-            if isinstance(init_objs[i], list) and all([is_labhandler(v) for v in init_objs[i]]):
-                init_objs[i]=[init_from(v) for v in init_objs[i]]
-
-            elif is_labhandler(init_objs[i]):
-                init_objs[i]=init_from(init_objs[i])
-
-            # else:
-            #     warnings.warn(f"{var_name}:{init_objs[i]} is no valid labhandler.")
-            
-            self.logger.debug(f"{var_name}:{init_objs[i]}")
-
-        return init_objs
-    
-
-    def handle_object(self, locals:dict, var_name:str, save_local:bool=False, save_global:bool=False, **kwargs):
-
         the_object=locals.pop(var_name, None); del locals
-        if the_object is None:
+        if is_empty(the_object):
             the_object=self.config.get(var_name, None)
-        if the_object is None:
-            warnings.warn(f"{var_name} is None.")
-
+        if is_empty(the_object):
+            warnings.warn(f"{var_name} is empty.")
+            return None #dont handle empty objects
         
+
+        if save_global and save_file: warnings.warn(f"Both save_global and save_file are set to True!")
+
         if isinstance(the_object, list):
             pop_len=len(self._handled_objects)
-            the_object=[self.handle_object({var_name: v}, var_name, save_local, save_global, **kwargs) for v in the_object]
+            the_object=[self.handle_object({var_name: v}, var_name, save_file, save_global, **kwargs) for v in the_object]
             while len(self._handled_objects)>pop_len: self._handled_objects.pop() #pop back to initial lenght to avoid duplicates
-            
-        elif is_labhandler(the_object):
 
-            if the_object.is_saved and save_global:
-                warnings.warn(f"{var_name} is already saved globally. Setting save_global to False.")
-                save_global=False
-            
-            the_object=init_from(the_object)
+        elif is_labh_dict(the_object, LABH_FILE_KEYS):
+            the_object=load_labh_file_from_dict(the_object, self._path)
+        
+        elif is_labh_reference(the_object, LABH_LOCAL_KEYS):
+            the_object=init_from_labh_reference(the_object)
 
-            if is_datahandle(the_object):
+            if is_labh_reference(the_object, LABH_GLOBAL_KEYS):
+                if the_object.is_saved and save_global:
+                    warnings.warn(f"{var_name} is already saved globally. Setting save_global to False.")
+                    save_global=False
+
+            if is_labh_datahandle_reference(the_object):
                 the_object=the_object.df
-
-        elif is_local(the_object):
-            save_local = False
-            the_object=load_local_from_dict(the_object, self._path)
         
         else:
             if save_global:
                 warnings.warn(f"{var_name} ({type(the_object)=}) can not be saved globally. Setting save_global to False.")
                 save_global=False
-
-
-        self._handled_objects+=[dict(var_name=var_name, the_object=the_object, save_local=save_local, save_global=save_global, **kwargs)]
+        
+        self._handled_objects+=[dict(var_name=var_name, the_object=the_object, save_file=save_file, save_global=save_global, **kwargs)]
         return the_object
         
-    def attach_parent(self, locals: dict, var_names:list = None, **kwargs):
+    def attach_parent(self, locals: dict, **kwargs):
         """
         Attach lab attributes to target object.
         locals: dict
@@ -434,11 +425,14 @@ class Labhandler(object):
         ref=locals.pop('ref', None)
         locals_kwargs=locals.pop('kwargs', None)
 
+
+        #import classes 
+
         #search for label in locals, kwargs, and kwargs['kwargs']
         label=(locals.pop('label', None)) or (locals_kwargs.get('label', None)) or (kwargs.get('label', None))
 
-        #self._invoke_keys=list(locals.keys()) # keys to be invoked in get_config/__dict__ -> better for displaying in yaml
-        #self.logger.debug(f"{self._invoke_keys=}")
+        self._handled_objects=[] #reset handled objects, as they cause mutable default arguments over various reinitializations
+        self.logger.debug(f"resetted {self._handled_objects=} ")
 
         self.load(ref, obj, label)
 
@@ -464,13 +458,8 @@ class Labhandler(object):
             if callable(method):
                 setattr(obj, method_name, MethodType(method, obj))
 
-
-        # if var_names is not None:
-        #     return self.get_initialized_objects(locals, var_names)
         return
     
-
-
 
     @property
     def config(self):
@@ -501,7 +490,11 @@ class Labhandler(object):
         return bool(fn)
 
     def __repr__(self):
-        return f"{self.class_parts[-1]} AT: {self.path}"
+
+        if hasattr(self, 'class_parts') and hasattr(self, 'path'):
+            return f"{self.class_parts[-1]} AT: {self.path}"
+        else:
+            return super().__repr__()
 
 
             
