@@ -1,5 +1,6 @@
 import os
 import sys
+import copy
 import logging
 import warnings
 import importlib
@@ -14,6 +15,13 @@ from labtools.system_utils import TIMESTAMP_FORMAT, get_datetime
 
 from labtools.directory_utils import *
 from labtools.dictionary_utils import *
+
+def get_labhandler():
+    """Returns an instance of Labhandler if it exists in sys.modules, else None."""
+    if 'labtools.labhandler' in sys.modules:
+        module = sys.modules['labtools.labhandler']
+        return getattr(module, 'Labhandler', None)() if hasattr(module, 'Labhandler') else None
+    return None
 
 LAB_SUFFIX='_lab'
 LABH_FILE_KEYS=['type','filename']
@@ -51,10 +59,10 @@ def is_labh_datahandle_reference(the_input):
     return False
 
 
-def init_from_labh_object(the_object):
+def init_from_labh_object(the_object, **kwargs):
     return the_object
 
-def init_from_labh_dict(the_dict):
+def init_from_labh_dict(the_dict, **kwargs):
     assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
     class_name=the_dict['class_parts'][-1]
 
@@ -67,16 +75,16 @@ def init_from_labh_dict(the_dict):
         the_class = globals()[class_name]
         logging.debug(f"use {class_name} from globals() as {the_class} {id(the_class)=}")
 
-    the_object=the_class(**the_dict)
+    the_object=the_class(**the_dict, **kwargs)
     return the_object
 
-def init_from_labh_reference(the_input):
+def init_from_labh_reference(the_input, **kwargs):
     """
     Initializes a labhandler attached object from a dictionary or an object reference.
     """
     the_object=the_input
     if is_labh_dict(the_input, LABH_LOCAL_KEYS):
-        the_object=init_from_labh_dict(the_input)
+        the_object=init_from_labh_dict(the_input, **kwargs)
     
     return the_object
 
@@ -169,7 +177,6 @@ def get_class(class_name, module_path):
     return getattr(module, class_name)
 
 
-
 class Labhandler(object):
     logger = logging.getLogger(__name__)
 
@@ -217,8 +224,8 @@ class Labhandler(object):
 
         if isinstance(ref, (int, type(None))):
 
-            if ref == -1:
-                self.id=get_max_id(self._class_path)
+            if isinstance(ref, int) and ref<0:
+                self.id=get_max_id(self._class_path)+ref+1
 
             elif isinstance(ref, int):
                 self.id=ref
@@ -240,20 +247,89 @@ class Labhandler(object):
             self.update_config(config_dict)
             self.save_config()
 
-    def __init__(self, ref=None, obj=None, lab_path:str=None, **kwargs):
-        self.load_lab(lab_path)
+
+    def init_from_path(self, path:str=None, **kwargs):
+        self.load(path, **kwargs)
+        return
+
+    def init_from_parent(self, locals: dict, **kwargs):
+        """
+        Attach lab attributes to target object.
+        locals: dict
+            Dictionary containing the local variables of the calling function.
+        var_names: list
+            List of keys to be preloaded from locals.
+        kwargs: dict
+        """
+
+        del locals['labh']
+        obj=locals.pop('self', None)
+        ref=locals.pop('ref', None)
+        locals_kwargs=locals.pop('kwargs', None)
+
+
+        #import classes 
+
+        # self.logger.debug(f"{locals.get('label', None)=}")
+        # self.logger.debug(f"{locals_kwargs.get('label', None)=}")
+        # self.logger.debug(f"{kwargs.get('label', None)=}")
+        # self.logger.debug(f"{getattr(self,'label', None)=}")
+
+        #search for label in locals, kwargs, and kwargs['kwargs']
+        label=(locals.pop('label', None)) or (locals_kwargs.get('label', None)) or (kwargs.get('label', None))
+
+        self._handled_objects=[] #reset handled objects, as they cause mutable default arguments over various reinitializations
+        self.logger.debug(f"resetted {self._handled_objects=} ")
+
+        self.load(ref, obj, label)
+
+        #Attach Locals to target object
+        for k,v in locals.items():
+            setattr(obj, k, v)
+
+        #Attach Lab Attributes to target object
+        for k,v in vars(self).items():
+            if (k in locals): continue
+            setattr(obj, k, v)
+
+        setattr(obj, 'logger', self.logger)
+
+        for method_name in self._attach_methods_to_parent:
+            if hasattr(obj, method_name): continue #method already exists --> do not overwrite it!
+            method = getattr(self.__class__, method_name, None)
+
+            if isinstance(method, property):
+                setattr(obj.__class__, method_name, method)
+
+            if callable(method):
+                setattr(obj, method_name, MethodType(method, obj))
+
+        return
+
+
+    def __init__(self, ref=None, **kwargs):
+        self.logger.debug(f"{self.__dict__=}")
+        self.load_lab(kwargs.get('lab_path', None))
+
         self._datetime_init=get_datetime()
-
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
-
         self._handled_objects = []
-
-        self._attach_methods_to_parent = ['get_overview','get_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved']
-
+        self._attach_methods_to_parent = ['get_overview','get_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
-        if (ref is not None) or (obj is not None):
-            self.load(ref, obj, **kwargs)
+        if isinstance(ref, dict):
+            if all([key in ref for key in ['self']]):
+                self.init_from_parent(ref,**kwargs)
+        
+        elif isinstance(ref, str):
+            if Path(ref).exists():
+                self.init_from_path(ref, **kwargs)
+        
+
+
+
+        return
+
 
     def get_overview(self, keypaths:list=[]) -> pd.DataFrame:
 
@@ -317,7 +393,7 @@ class Labhandler(object):
             if k in config_dict: continue
             if hasattr(self, k): config_dict[k]=getattr(self, k)
 
-        various_dict=self.__dict__
+        various_dict=copy.deepcopy(self.__dict__)
         various_dict=filter_dict_keypatterns(various_dict, [r'^_'], invert=True)
 
         handled_keys=[o['var_name'] for o in self._handled_objects]
@@ -373,7 +449,9 @@ class Labhandler(object):
             kwargs: Additional keyword arguments.
         """
 
-        the_object=locals.pop(var_name, None); del locals
+        the_object=locals.pop(var_name, None)
+        local_kwargs=locals.pop('kwargs', {}); del locals
+
         if is_empty(the_object):
             the_object=self.config.get(var_name, None)
         if is_empty(the_object):
@@ -385,14 +463,14 @@ class Labhandler(object):
 
         if isinstance(the_object, list):
             pop_len=len(self._handled_objects)
-            the_object=[self.handle_object({var_name: v}, var_name, save_file, save_global, **kwargs) for v in the_object]
+            the_object=[self.handle_object({var_name: v}, var_name, save_file, save_global,**local_kwargs, **kwargs) for v in the_object]
             while len(self._handled_objects)>pop_len: self._handled_objects.pop() #pop back to initial lenght to avoid duplicates
 
         elif is_labh_dict(the_object, LABH_FILE_KEYS):
             the_object=load_labh_file_from_dict(the_object, self._path)
         
         elif is_labh_reference(the_object, LABH_LOCAL_KEYS):
-            the_object=init_from_labh_reference(the_object)
+            the_object=init_from_labh_reference(the_object, **local_kwargs, **kwargs)
 
             if is_labh_reference(the_object, LABH_GLOBAL_KEYS):
                 if the_object.is_saved and save_global:
@@ -410,56 +488,7 @@ class Labhandler(object):
         self._handled_objects+=[dict(var_name=var_name, the_object=the_object, save_file=save_file, save_global=save_global, **kwargs)]
         return the_object
         
-    def attach_parent(self, locals: dict, **kwargs):
-        """
-        Attach lab attributes to target object.
-        locals: dict
-            Dictionary containing the local variables of the calling function.
-        var_names: list
-            List of keys to be preloaded from locals.
-        kwargs: dict
-        """
 
-        del locals['labh']
-        obj=locals.pop('self', None)
-        ref=locals.pop('ref', None)
-        locals_kwargs=locals.pop('kwargs', None)
-
-
-        #import classes 
-
-        #search for label in locals, kwargs, and kwargs['kwargs']
-        label=(locals.pop('label', None)) or (locals_kwargs.get('label', None)) or (kwargs.get('label', None))
-
-        self._handled_objects=[] #reset handled objects, as they cause mutable default arguments over various reinitializations
-        self.logger.debug(f"resetted {self._handled_objects=} ")
-
-        self.load(ref, obj, label)
-
-        #Attach Locals to target object
-        self.logger.debug(f"{locals=}")
-        for k,v in locals.items():
-            setattr(obj, k, v)
-
-        #Attach Lab Attributes to target object
-        for k,v in vars(self).items():
-            if (k in locals): continue
-            setattr(obj, k, v)
-        setattr(obj, 'logger', self.logger)
-
-
-        for method_name in self._attach_methods_to_parent:
-            if hasattr(obj, method_name): continue #method already exists --> do not overwrite it!
-            method = getattr(self.__class__, method_name, None)
-
-            if isinstance(method, property):
-                setattr(obj.__class__, method_name, method)
-
-            if callable(method):
-                setattr(obj, method_name, MethodType(method, obj))
-
-        return
-    
 
     @property
     def config(self):
@@ -489,6 +518,19 @@ class Labhandler(object):
         fn=get_filename_from_id(self._class_path, self.id, warn=False)
         return bool(fn)
 
+    @property
+    def df(self) -> pd.DataFrame:
+
+        for object_dict in self._handled_objects:
+            var_name=object_dict['var_name']
+            the_object=object_dict['the_object']
+
+            if isinstance(the_object, pd.DataFrame):
+                return getattr(self, var_name, pd.DataFrame()).copy()
+
+        #warnings.warn(f"No DataFrame Object found in {self}")
+        return
+                
     def __repr__(self):
 
         if hasattr(self, 'class_parts') and hasattr(self, 'path'):
