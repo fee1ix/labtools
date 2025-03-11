@@ -28,19 +28,33 @@ class Datahandle(object):
 
         if labh is not None:
             self.labh=labh(locals())
-            #self.labh.attach_parent(locals())
             data_df=self.labh.handle_object(locals(),'data_df', save_file=True, overwrite=False)
         
         if isinstance(data_df, pd.DataFrame):
             self.data_df = data_df.copy(); del data_df
 
-        # elif Path(f"{self._path}/df.pkl").exists():
-        #     self.df = pd.read_pickle(f"{self._path}/df.pkl")
-        
-        
-    # def save(self):
-    #     self.labh.save()
-    #     self.df.to_pickle(f"{self._path}/df.pkl")
+class BaseDatahandle(Datahandle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class EmbeddingDatahandle(Datahandle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class ChunksDatahandle(Datahandle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class InjectionDatahandle(Datahandle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+class EvaluationDatahandle(Datahandle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+
         
 
 

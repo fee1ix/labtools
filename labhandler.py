@@ -74,8 +74,17 @@ def init_from_labh_dict(the_dict, **kwargs):
     else: 
         the_class = globals()[class_name]
         logging.debug(f"use {class_name} from globals() as {the_class} {id(the_class)=}")
+    
+    if is_labh_dict(the_dict, LABH_GLOBAL_KEYS):
+        the_dict['ref']=the_dict.pop('id', None)
 
-    the_object=the_class(**the_dict, **kwargs)
+    logging.debug(f"{the_class=}")
+    logging.debug(f"{the_dict=}")
+    logging.debug(f"{kwargs=}")
+
+    kwargs.update(**the_dict)
+
+    the_object=the_class(**kwargs)
     return the_object
 
 def init_from_labh_reference(the_input, **kwargs):
@@ -314,7 +323,7 @@ class Labhandler(object):
         self._datetime_init=get_datetime()
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
         self._handled_objects = []
-        self._attach_methods_to_parent = ['get_overview','get_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
+        self._attach_methods_to_parent = ['get_overview','get_config', 'get_filtered_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
         if isinstance(ref, dict):
@@ -329,7 +338,6 @@ class Labhandler(object):
 
 
         return
-
 
     def get_overview(self, keypaths:list=[]) -> pd.DataFrame:
 
@@ -386,6 +394,18 @@ class Labhandler(object):
 
         return pd.DataFrame(overview_data)
 
+    def get_filtered_config(self, the_config: dict) -> dict:
+        the_config=filter_dict_keylist(the_config, self._config_exclude_keys, invert=True)
+        the_config=filter_dict_keypatterns(the_config, [r'^_'], invert=True)
+
+        handled_keys=[o['var_name'] for o in self._handled_objects]
+        the_config=filter_dict_keylist(the_config, handled_keys, invert=True)
+
+        the_config=filter_dict_valuetypes(the_config,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
+        the_config=filter_dict_values(the_config, [None], invert=True)
+
+        return the_config
+
     def get_config(self):
         config_dict=dict()
 
@@ -393,19 +413,27 @@ class Labhandler(object):
             if k in config_dict: continue
             if hasattr(self, k): config_dict[k]=getattr(self, k)
 
-        various_dict=copy.deepcopy(self.__dict__)
-        various_dict=filter_dict_keypatterns(various_dict, [r'^_'], invert=True)
+        # various_dict=copy.deepcopy(self.__dict__)
+        # various_dict=filter_dict_keypatterns(various_dict, [r'^_'], invert=True)
 
-        handled_keys=[o['var_name'] for o in self._handled_objects]
-        various_dict=filter_dict_keylist(various_dict, handled_keys, invert=True)
-        various_dict=filter_dict_keylist(various_dict, self._config_exclude_keys, invert=True)
+        # handled_keys=[o['var_name'] for o in self._handled_objects]
+        # various_dict=filter_dict_keylist(various_dict, handled_keys, invert=True)
+        # various_dict=filter_dict_keylist(various_dict, self._config_exclude_keys, invert=True)
         
-        various_dict=filter_dict_valuetypes(various_dict,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
-        various_dict=filter_dict_values(various_dict, [None], invert=True)
-        config_dict.update(various_dict)
+        # various_dict=filter_dict_valuetypes(various_dict,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
+        # various_dict=filter_dict_values(various_dict, [None], invert=True)
+
+        config_dict.update(self.get_filtered_config(self.__dict__))
 
         for object_dict in self._handled_objects:
-            config_dict[object_dict['var_name']]=get_labh_dict_from_object(**object_dict)
+
+            object_config_dict=get_labh_dict_from_object(**object_dict)
+            if isinstance(object_config_dict, list):
+                object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
+            elif isinstance(object_config_dict, dict):
+                object_config_dict=self.get_filtered_config(object_config_dict)
+
+            config_dict[object_dict['var_name']]=object_config_dict
 
         return config_dict
 
@@ -458,37 +486,41 @@ class Labhandler(object):
             warnings.warn(f"{var_name} is empty.")
             return None #dont handle empty objects
         
-
         if save_global and save_file: warnings.warn(f"Both save_global and save_file are set to True!")
 
+        return_object, handle_object=the_object, the_object
         if isinstance(the_object, list):
             pop_len=len(self._handled_objects)
-            the_object=[self.handle_object({var_name: v}, var_name, save_file, save_global,**local_kwargs, **kwargs) for v in the_object]
+            return_object=[self.handle_object({var_name: v}, var_name, save_file, save_global,**local_kwargs, **kwargs) for v in the_object]
+            handle_object=return_object
             while len(self._handled_objects)>pop_len: self._handled_objects.pop() #pop back to initial lenght to avoid duplicates
 
         elif is_labh_dict(the_object, LABH_FILE_KEYS):
-            the_object=load_labh_file_from_dict(the_object, self._path)
+            return_object=load_labh_file_from_dict(the_object, self._path)
+            handle_object=return_object
         
         elif is_labh_reference(the_object, LABH_LOCAL_KEYS):
-            the_object=init_from_labh_reference(the_object, **local_kwargs, **kwargs)
+            return_object=init_from_labh_reference(the_object, **local_kwargs, **kwargs)
+            handle_object=return_object
 
-            if is_labh_reference(the_object, LABH_GLOBAL_KEYS):
-                if the_object.is_saved and save_global:
+            if is_labh_reference(return_object, LABH_GLOBAL_KEYS):
+                if return_object.is_saved and save_global:
                     warnings.warn(f"{var_name} is already saved globally. Setting save_global to False.")
                     save_global=False
 
-            if is_labh_datahandle_reference(the_object):
-                the_object=the_object.df
+            if is_labh_datahandle_reference(return_object):
+                handle_object=copy.deepcopy(return_object)
+                return_object=return_object.df
+
         
         else:
             if save_global:
                 warnings.warn(f"{var_name} ({type(the_object)=}) can not be saved globally. Setting save_global to False.")
                 save_global=False
         
-        self._handled_objects+=[dict(var_name=var_name, the_object=the_object, save_file=save_file, save_global=save_global, **kwargs)]
-        return the_object
+        self._handled_objects+=[dict(var_name=var_name, the_object=handle_object, save_file=save_file, save_global=save_global, **kwargs)]
+        return return_object
         
-
 
     @property
     def config(self):
