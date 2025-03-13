@@ -35,7 +35,6 @@ def is_empty(x):
     if isinstance(x, (list, tuple, set, dict)): return len(x)==0
     return not bool(x)
 
-
 def is_labh_dict(the_input, required_keys=LABH_GLOBAL_KEYS) -> bool:
     if not isinstance(the_input, dict): return False
     if all([key in the_input for key in required_keys]): return True
@@ -66,8 +65,6 @@ def init_from_labh_dict(the_dict, **kwargs):
     assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
     class_name=the_dict['class_parts'][-1]
 
-    #[k for k,v in globals().items() if (v is not None) and ('LLMPipeline' in str(k))]
-
     if class_name not in globals():
         the_class = get_class(class_name,the_dict['module_path'])
         logging.debug(f"get {class_name} from {the_dict['module_path']} {id(the_class)=}")
@@ -97,7 +94,6 @@ def init_from_labh_reference(the_input, **kwargs):
     
     return the_object
 
-
 def load_labh_file_from_dict(the_dict:dict, path:str=''):
     assert is_labh_dict(the_dict, LABH_FILE_KEYS), f"{the_dict} is not a valid labhandler file reference."
 
@@ -114,7 +110,6 @@ def save_labh_file(the_object, filename:str, path:str='', overwrite=False, **kwa
         the_object.to_pickle(save_path)
     else:
         raise NotImplementedError(f"Object of type {type(the_object)} not supported.")
-
 
 def get_labh_dict_from_file(the_object:object, var_name:str, **kwargs):
     labh_dict=dict()
@@ -139,6 +134,11 @@ def get_labh_dict_from_local(the_object:object, var_name:str, **kwargs):
     labh_dict=dict()
     labh_dict['class_parts']=get_class_parts(the_object)
     labh_dict['module_path']=getattr(the_object,'__module__', None)
+
+    # if local is not saved, the id will be removed. So when reloading it is not tried to load a potential non-existing file/ other object
+    if not getattr(the_object,'is_saved', True):
+        if hasattr(the_object, 'id'):
+            delattr(the_object, 'id')
 
     if hasattr(the_object, 'get_config'):
         kwargs=update_dict(kwargs, the_object.get_config(), overwrite_if_conflict=False, interpret_none_as_val=True)
@@ -238,7 +238,9 @@ class Labhandler(object):
 
             elif isinstance(ref, int):
                 self.id=ref
-                if not self.is_saved: raise FileNotFoundError(f"ID {self.id} not found in {self._class_path}")
+                if not self.is_saved:
+                    warnings.warn(f"ID {self.id} not found in {self._class_path}")
+                    #raise FileNotFoundError(f"ID {self.id} not found in {self._class_path}")
 
             else: self.id=get_max_id(self._class_path)+1
 
@@ -335,8 +337,6 @@ class Labhandler(object):
                 self.init_from_path(ref, **kwargs)
         
 
-
-
         return
 
     def get_overview(self, keypaths:list=[]) -> pd.DataFrame:
@@ -358,8 +358,12 @@ class Labhandler(object):
                 value=None
                 keypath_list=split_keypath(keypath)
 
+                if keypath=='_path':
+                    value=labh._path
+
                 if keypath in config_dict.keys():
                     value=config_dict[keypath]
+                
 
                 elif len(keypath_list)==1:
                     ambiguous_keypaths = get_dict_keypaths(config_dict, keypath_list[0])
@@ -413,21 +417,12 @@ class Labhandler(object):
             if k in config_dict: continue
             if hasattr(self, k): config_dict[k]=getattr(self, k)
 
-        # various_dict=copy.deepcopy(self.__dict__)
-        # various_dict=filter_dict_keypatterns(various_dict, [r'^_'], invert=True)
-
-        # handled_keys=[o['var_name'] for o in self._handled_objects]
-        # various_dict=filter_dict_keylist(various_dict, handled_keys, invert=True)
-        # various_dict=filter_dict_keylist(various_dict, self._config_exclude_keys, invert=True)
-        
-        # various_dict=filter_dict_valuetypes(various_dict,valuetypes=[str,int,float,bool,dict,list,tuple,set,type(None)])
-        # various_dict=filter_dict_values(various_dict, [None], invert=True)
-
         config_dict.update(self.get_filtered_config(self.__dict__))
 
         for object_dict in self._handled_objects:
 
             object_config_dict=get_labh_dict_from_object(**object_dict)
+
             if isinstance(object_config_dict, list):
                 object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
             elif isinstance(object_config_dict, dict):

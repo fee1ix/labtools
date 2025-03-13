@@ -1,6 +1,7 @@
 import re
 import copy
 import logging
+from typing import List, Any
 
 def split_keypath(keypath):
     if isinstance(keypath,str):
@@ -33,6 +34,82 @@ def get_keys(the_dict, atomic_only=False):
             keys.extend(get_keys(v, atomic_only))
     return keys
 
+def get_keypaths(the_dict:dict, atomic_only:bool=False) -> List[List[str]]:
+    """
+    Get all keys from a dictionary. If atomic_only is True, only return keys that are not associated with a nested dictionary.
+    """
+    assert isinstance(the_dict, dict), "Input must be a dictionary."
+
+    def _recursive(current_dict: dict, current_path: List[str] = []) -> List[List[str]]:
+        keypaths = []
+        for key, value in current_dict.items():
+            new_path = current_path + [key]
+            if isinstance(value, dict):
+                # Continue recursion for nested dictionaries
+                keypaths.extend(_recursive(value, new_path))
+                if not atomic_only:
+                    keypaths.append(new_path)
+            else:
+                # Only add atomic paths if atomic_only is True
+                keypaths.append(new_path)
+        return keypaths
+
+    return _recursive(the_dict)
+
+def get_attrpaths(the_object: object, atomic_only: bool = False, max_depth:int=5) -> List[List[str]]:
+    """
+    Get all attribute paths from an object. If atomic_only is True, only return paths that end in non-object (atomic) values.
+    """
+    raise NotImplementedError("This function is not yet implemented.")
+    assert isinstance(the_object, object), "Input must be an object."
+
+    def _recursive(current_object: Any, current_path: List[str] = []) -> List[List[str]]:
+        paths = []
+
+        if len(current_path) > max_depth:
+            return paths
+
+        for attr in dir(current_object):
+            if attr.startswith('_') or callable(getattr(current_object, attr)):
+                continue
+            value = getattr(current_object, attr)
+            new_path = current_path + [attr]
+            if hasattr(value, '__dict__'):
+                paths.extend(_recursive(value, new_path))
+                if not atomic_only:
+                    paths.append(new_path)
+            else:
+                paths.append(new_path)
+        return paths
+
+    return _recursive(the_object)
+    
+
+
+
+    # keys = []
+    # _keypaths=[]
+    # for k, v in the_dict.items():
+    #     if not atomic_only or not isinstance(v, dict):
+    #         keys.append(k)
+
+
+    #     if isinstance(v, dict):
+    #         keys.extend(get_keys(v, atomic_only))
+    # return keys
+
+
+def get_attrs(the_object:object, atomic_only:bool=False) -> list:
+    """
+    Get all attributes from an object. If atomic_only is True, only return attributes that are not associated with a nested object.
+    """
+    assert isinstance(the_object, object), "Input must be an object."
+
+    attrs=[]
+
+    return attrs
+
+
 def has_keys(the_dict, keys, atomic_only=False):
     return all([k in get_keys(the_dict, atomic_only=atomic_only) for k in keys])
 
@@ -40,32 +117,34 @@ def has_key(the_dict, key, atomic_only=False):
     return key in get_keys(the_dict, atomic_only=atomic_only)
 
 
-
-def setattr_or_key(obj, key, val):
+def set_value(obj:object, attr_or_key: str, value: Any) -> None:
 
     if isinstance(obj, dict):
-        obj[key] = val
+        obj[attr_or_key] = value
     else:
-        setattr(obj,key,val)
-
-def hasattr_or_key(obj, key):
-    # Check if it's a dictionary and contains the key
-    if isinstance(obj, dict):
-        return key in obj
-    # Otherwise, check if it's an object and has the attribute
-    return hasattr(obj, key)
-
-def hasattrs_or_keys(obj, keys):
-    return all(hasattr_or_key(obj, key) for key in keys)
-
-def getattr_or_key(obj, key, val=None):
-    # Check if it's a dictionary and contains the key
-    if isinstance(obj, dict):
-        if key in obj: val = obj[key]
+        setattr(obj,attr_or_key,value)
     
-    val = getattr(obj, key, val)
+    return
 
-    return val
+def hasattr_or_key(obj:object, attr_or_key:str) -> bool:
+    # Check if it's a dictionary and contains the key
+    if isinstance(obj, dict):
+        return attr_or_key in obj
+    # Otherwise, check if it's an object and has the attribute
+    return hasattr(obj, attr_or_key)
+
+def hasattrs_or_keys(obj:object, attrs_or_keys: list) -> bool:
+    return all(hasattr_or_key(obj, key) for key in attrs_or_keys)
+
+def get_value(obj: object, attr_or_key:str, value:Any=None) -> Any:
+    # Check if it's a dictionary and contains the key
+    if isinstance(obj, dict):
+        if attr_or_key in obj:
+            value = obj[attr_or_key]
+    else:
+        value = getattr(obj, attr_or_key, value)
+
+    return value
 
 def invoke_dict_callable(the_dict: dict, callable_name: str) -> dict:
 
@@ -242,11 +321,25 @@ def has_keypath(the_dict, keypath):
         key = keypath[0]
 
         if not isinstance(the_dict, dict): return False
+
         if not key in the_dict: return False
         if len(keypath)==1: return True
         else: return _recursive(the_dict[key], keypath[1:])
 
     return _recursive(the_dict, keypath)
+
+def hasattr_or_keypath(obj:object, attr_or_keypath:list) -> bool:
+
+    def _recursive(obj:object, attr_or_keypath: List[str]) -> bool:
+
+        attr_or_key = attr_or_keypath[0]
+        if not hasattr_or_key(obj, attr_or_key): return False
+        if len(attr_or_keypath)==1: return True
+
+        else: return _recursive(get_value(obj,attr_or_key), attr_or_keypath[1:])
+
+    return _recursive(obj, attr_or_keypath)
+
 
 def get_dict_value_from_keypath(the_dict, keypath):
 
@@ -261,6 +354,46 @@ def get_dict_value_from_keypath(the_dict, keypath):
             return None
         
     return _recursive(the_dict, keypath)
+
+
+def get_dict_values(the_dict: dict, key: str) -> List[Any]:
+    """
+    Recursively find all values for a given key in a nested dictionary.
+    """
+    values = []
+
+    def _recursive(current_dict):
+        if isinstance(current_dict, dict):
+            for k, v in current_dict.items():
+                if k == key:
+                    values.append(v)
+                if isinstance(v, dict):
+                    _recursive(v)
+                elif isinstance(v, list):
+                    for item in v:
+                        _recursive(item)
+
+    _recursive(the_dict)
+    return values
+
+
+def getattr_or_keypath(obj:object, attr_or_keypath:List[str], value:Any=None) -> Any:
+
+    def _recursive(obj, attr_or_keypath, value=None):
+        attr_or_key = attr_or_keypath[0]
+
+        if hasattr_or_key(obj, attr_or_key):
+            if len(attr_or_keypath)>1:
+                return _recursive(get_value(obj,attr_or_key), attr_or_keypath[1:])
+            
+            else:
+                return get_value(obj,attr_or_key)
+        else:
+            return value
+        
+    return _recursive(obj, attr_or_keypath, value)
+
+
 
 def get_dict_value(the_dict, key):
     ambiguous_keypaths=get_dict_keypaths(the_dict, key)
