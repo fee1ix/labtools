@@ -166,8 +166,33 @@ def invoke_dict_callable(the_dict: dict, callable_name: str) -> dict:
 
     return _recursive(the_dict, callable_name)  # Otherwise, return as is
 
-
-def filter_dict_valuetypes(the_dict, valuetypes=[], invert=False):
+def filter_dict_valuetypes(the_dict: dict, valuetypes: list = [], invert: bool = False) -> dict:
+    """
+    Filters a dictionary recursively based on the types of its values.
+    Args:
+        the_dict (dict): The input dictionary to be filtered.
+        valuetypes (list, optional): A list of value types to filter by. Defaults to an empty list.
+        invert (bool, optional): If True, the function will exclude values of the specified types 
+                                    instead of including them. Defaults to False.
+    Returns:
+        dict: A new dictionary containing only the key-value pairs that match the filtering criteria.
+    Notes:
+        - If `invert` is False, the function includes only the key-value pairs where the value's type 
+            matches one of the types in `valuetypes`.
+        - If `invert` is True, the function excludes key-value pairs where the value's type matches 
+            one of the types in `valuetypes`.
+        - The function processes nested dictionaries recursively.
+        - Empty dictionaries and lists are removed from the result.
+    Example:
+        >>> input_dict = {
+        ...     "a": 1,
+        ...     "b": "string",
+        ...     "c": {"d": 2, "e": []},
+        ...     "f": [],
+        ... }
+        >>> filter_dict_valuetypes(input_dict, valuetypes=[int])
+        {'a': 1, 'c': {'d': 2}}
+    """
 
     if (dict in valuetypes) and not invert: valuetypes.remove(dict)
     if (dict not in valuetypes) and invert: valuetypes.append(dict)
@@ -252,8 +277,20 @@ def filter_dict_keypatterns(the_dict, keypatterns=[], invert=False):
     
     return _recursive(the_dict)
 
-def filter_dict_keylist(the_dict, keylist=[], invert=False):
-    
+def filter_dict_keylist(the_dict:dict, keylist:list=[], invert:bool=False) -> dict:
+    """
+    Filters a dictionary by including or excluding keys based on a given key list.
+    This function recursively traverses a dictionary and filters its keys based on 
+    the provided `keylist`. If `invert` is set to `True`, the function excludes the 
+    keys in `keylist` instead of including them.
+    Args:
+        the_dict (dict): The dictionary to filter.
+        keylist (list, optional): A list of keys to include or exclude. Defaults to an empty list.
+        invert (bool, optional): If `False`, only keys in `keylist` are included. 
+                                 If `True`, keys in `keylist` are excluded. Defaults to `False`.
+    Returns:
+        dict: A new dictionary containing the filtered keys and their associated values.
+    """
     def _recursive(the_dict):
         new_dict=dict()
         for k,v in the_dict.items():

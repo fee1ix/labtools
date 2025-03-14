@@ -4,13 +4,13 @@ import copy
 import logging
 import warnings
 import importlib
-
 import pandas as pd
 
 from types import MethodType
 from functools import partial
 from typing import Optional, Union
 
+from labtools import *
 from labtools.system_utils import TIMESTAMP_FORMAT, get_datetime
 
 from labtools.directory_utils import *
@@ -65,6 +65,9 @@ def init_from_labh_dict(the_dict, **kwargs):
     assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
     class_name=the_dict['class_parts'][-1]
 
+    if the_dict.get('class_parts', None) == ['FinetuningExperiment', 'InjectionExperiment']:
+        print(f"{the_dict=}")
+
     if class_name not in globals():
         the_class = get_class(class_name,the_dict['module_path'])
         logging.debug(f"get {class_name} from {the_dict['module_path']} {id(the_class)=}")
@@ -73,15 +76,26 @@ def init_from_labh_dict(the_dict, **kwargs):
         logging.debug(f"use {class_name} from globals() as {the_class} {id(the_class)=}")
     
     if is_labh_dict(the_dict, LABH_GLOBAL_KEYS):
+        logging.debug(f"its a global labhandler dict")
         the_dict['ref']=the_dict.pop('id', None)
 
+    else:
+        logging.debug(f"its no global labhandler local dict")
+
     logging.debug(f"{the_class=}")
-    logging.debug(f"{the_dict=}")
-    logging.debug(f"{kwargs=}")
+    #logging.debug(f"{filter_dict_keylist(the_dict, LABH_GLOBAL_KEYS)=}")
 
     kwargs.update(**the_dict)
+    if the_dict.get('class_parts', None) == ['FinetuningExperiment', 'InjectionExperiment']:
+        print(f"{kwargs=}")
 
     the_object=the_class(**kwargs)
+
+    # if the_dict.get('label', None) == 'RAG_CHUNKS':
+    #     print(f"the_object.config={json.dumps(the_object.config, ensure_ascii=False, indent=2)}")
+        
+
+
     return the_object
 
 def init_from_labh_reference(the_input, **kwargs):
@@ -252,12 +266,12 @@ class Labhandler(object):
         self._name=f"{self.id:04d}_{self.label}"
 
         if self.is_saved:
+            self.logger.debug(f"Loaded {self._name} from {self._path}")
             config_dict = get_yaml(f"{self._path}/config.yaml")
             config_dict = update_dict(config_dict, self.config, overwrite_if_conflict=True, interpret_none_as_val=True)
             #self.logger.debug(f"{config_dict=}")
             self.update_config(config_dict)
             self.save_config()
-
 
     def init_from_path(self, path:str=None, **kwargs):
         self.load(path, **kwargs)
@@ -278,13 +292,10 @@ class Labhandler(object):
         ref=locals.pop('ref', None)
         locals_kwargs=locals.pop('kwargs', None)
 
-
-        #import classes 
-
-        # self.logger.debug(f"{locals.get('label', None)=}")
-        # self.logger.debug(f"{locals_kwargs.get('label', None)=}")
-        # self.logger.debug(f"{kwargs.get('label', None)=}")
-        # self.logger.debug(f"{getattr(self,'label', None)=}")
+        self.logger.debug(f"{locals.get('label', None)=}")
+        self.logger.debug(f"{locals_kwargs.get('label', None)=}")
+        self.logger.debug(f"{kwargs.get('label', None)=}")
+        self.logger.debug(f"{getattr(self,'label', None)=}")
 
         #search for label in locals, kwargs, and kwargs['kwargs']
         label=(locals.pop('label', None)) or (locals_kwargs.get('label', None)) or (kwargs.get('label', None))
@@ -317,10 +328,11 @@ class Labhandler(object):
 
         return
 
-
     def __init__(self, ref=None, **kwargs):
         self.logger.debug(f"{self.__dict__=}")
         self.load_lab(kwargs.get('lab_path', None))
+
+        self.logger.debug(f"{ref=}")
 
         self._datetime_init=get_datetime()
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
@@ -328,10 +340,13 @@ class Labhandler(object):
         self._attach_methods_to_parent = ['get_overview','get_config', 'get_filtered_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
-        if isinstance(ref, dict):
+
+
+        if isinstance(ref, dict): #init from locals dict
             if all([key in ref for key in ['self']]):
-                self.init_from_parent(ref,**kwargs)
-        
+                self.logger.debug(f"init from locals")
+                self.init_from_parent(ref, **kwargs)
+          
         elif isinstance(ref, str):
             if Path(ref).exists():
                 self.init_from_path(ref, **kwargs)
@@ -422,7 +437,6 @@ class Labhandler(object):
         for object_dict in self._handled_objects:
 
             object_config_dict=get_labh_dict_from_object(**object_dict)
-
             if isinstance(object_config_dict, list):
                 object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
             elif isinstance(object_config_dict, dict):
@@ -459,6 +473,11 @@ class Labhandler(object):
 
         self.save_config()
         self.save_files()
+
+    def handle_kwargs(self, kwargs:dict) -> dict:
+        self.logger.debug(f"{kwargs=}")
+
+        return update_dict()
 
     def handle_object(self, locals:dict, var_name:str, save_file:bool=False, save_global:bool=False, **kwargs):
         """
