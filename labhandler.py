@@ -492,14 +492,15 @@ class Labhandler(object):
         """
 
         the_object=locals.pop(var_name, None)
-        local_kwargs=locals.pop('kwargs', {}); del locals
+        local_kwargs=locals.pop('kwargs', {})
 
         if is_empty(the_object):
             the_object=self.config.get(var_name, None)
         if is_empty(the_object):
-            warnings.warn(f"{var_name} is empty.")
+            parent_label=getattr(locals.get('self', None), 'label', None)
+            self.logger.debug(f"'{var_name}' of {parent_label} is empty.")
             return None #dont handle empty objects
-        
+
         if save_global and save_file: warnings.warn(f"Both save_global and save_file are set to True!")
 
         return_object, handle_object=the_object, the_object
