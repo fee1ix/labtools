@@ -1,9 +1,11 @@
 import os
 import sys
 import copy
+import pickle
 import logging
 import warnings
 import importlib
+
 import pandas as pd
 
 from types import MethodType
@@ -184,6 +186,84 @@ def get_labh_dict_from_object(the_object:object, var_name:str, save_file:bool=Fa
         return get_labh_dict_from_local(the_object, var_name, **kwargs)
 
 
+###################
+
+def save_pickle(path:str, filename:str, type:str, value:Any, overwrite:bool=True, **kwargs) -> None:
+    save_path=(Path(path)/filename).as_posix()
+
+    if (os.path.exists(save_path)) and (not overwrite): return #do not overwrite existing files
+
+    if type=='DataFrame':
+        value.to_pickle(save_path)
+    
+    else:
+        with open(save_path, "wb") as f:
+            pickle.dump(value, f)
+    
+    return
+
+def get_config_from_file(key:str, value:object, **kwargs) -> dict:
+    config=dict(
+        filename=f"{key}.pkl",
+        type=value.__class__.__name__,
+    )
+ 
+    if config['type']=='DataFrame':
+        config['columns'] = ', '.join(list(value.columns))
+        config['n_rows'] = len(value)
+
+    elif config['type']=='ndarray':
+        config['shape'] = value.shape
+        config['dtype'] = value.dtype
+    
+    elif config['type']=='Node':
+        config['size'] = value.size
+        config['height'] = value.height
+    
+    config=update_dict(config, kwargs, overwrite_if_conflict=False, interpret_none_as_val=True)
+    return config
+
+def get_config_from_local(key: str, value:object, **kwargs) -> dict:
+    config=dict()
+    config['class_parts']=get_class_parts(value)
+    config['module_path']=getattr(value,'__module__', None)
+
+    # if local is not saved, the id will be removed. So when reloading it is not tried to load a potential non-existing file/ other object
+    if not getattr(value,'is_saved', True):
+        if hasattr(value, 'id'):
+            delattr(value, 'id')
+
+    if hasattr(value, 'get_config'):
+        kwargs=update_dict(kwargs, value.get_config(), overwrite_if_conflict=False, interpret_none_as_val=True)
+    elif hasattr(value, '__dict__'):
+        kwargs=update_dict(kwargs, value.__dict__, overwrite_if_conflict=False, interpret_none_as_val=True)
+
+    config=update_dict(config, kwargs, overwrite_if_conflict=False, interpret_none_as_val=True)
+    return config
+
+def get_config_from_global(key: str, value:object, **kwargs) -> dict:
+    assert is_labh_object(value), f"{value} is not a valid labhandler object."
+    value.update_config(kwargs)
+    return value.get_config()
+
+def get_config_from_handle(save_file:bool=False, save_global:bool=False, **kwargs) -> dict:
+
+    if save_file:
+        return get_config_from_file(**kwargs)
+
+    if save_global:
+        return get_labh_dict_from_global(**kwargs)
+    
+    if not (save_file or save_global):
+
+        if isinstance(kwargs['value'], list):
+            values=kwargs.pop('value')
+            return [get_config_from_handle(value=v, **kwargs) for v in values]
+
+        return get_config_from_local(**kwargs)
+
+###
+
 def get_class_parts(the_class):
     if not isinstance(the_class, type): the_class=the_class.__class__
     class_parts=[c.__name__ for c in the_class.mro()[:-1]][::-1]
@@ -203,7 +283,7 @@ def get_class(class_name, module_path):
 class Labhandler(object):
     logger = logging.getLogger(__name__)
 
-    def load_lab(self, path:str=None) -> None:
+    def load_from_lab(self, path:str=None) -> None:
         if path is None: path=os.getcwd()
         
         path_parts = []
@@ -235,28 +315,30 @@ class Labhandler(object):
         the_dict = get_yaml(Path(path)/'config.yaml')
         self.load_from_dict(the_dict)
     
-    def load(self, ref=None, obj=None, label:str=None, **kwargs) -> None:
+    def load_from_id(self, id=None) -> None:
+
+        if isinstance(id, int) and id<0:
+            self.id=get_max_id(self._class_path)+id+1
+        
+        elif isinstance(id, int):
+            self.id=id
+
+            if not self.is_saved:
+                warnings.warn(f"ID {self.id} not found in {self._class_path}")
+                #raise FileNotFoundError(f"ID {self.id} not found in {self._class_path}")
+        else:
+            self.id=get_max_id(self._class_path)+1
+        
+        return
+
+    def load(self, ref=None, obj=None, label:str=None) -> None:
 
         if obj is not None: self.load_from_object(obj)
 
-        if isinstance(ref, (str, Path)):
-            self.load_from_path(ref)
+        if is_labh_dict(ref): self.load_from_dict(ref)
+        elif isinstance(ref, (str, Path)): self.load_from_path(ref)
+        elif isinstance(ref, (int, type(None))): self.load_from_id(id=ref)
 
-        elif is_labh_dict(ref): 
-            self.load_from_dict(ref)
-
-        if isinstance(ref, (int, type(None))):
-
-            if isinstance(ref, int) and ref<0:
-                self.id=get_max_id(self._class_path)+ref+1
-
-            elif isinstance(ref, int):
-                self.id=ref
-                if not self.is_saved:
-                    warnings.warn(f"ID {self.id} not found in {self._class_path}")
-                    #raise FileNotFoundError(f"ID {self.id} not found in {self._class_path}")
-
-            else: self.id=get_max_id(self._class_path)+1
 
         if self.is_saved: #update label if it was renamed
             fn=get_filename_from_id(self._class_path, self.id, warn=True)
@@ -269,9 +351,9 @@ class Labhandler(object):
             self.logger.debug(f"Loaded {self._name} from {self._path}")
             config_dict = get_yaml(f"{self._path}/config.yaml")
             config_dict = update_dict(config_dict, self.config, overwrite_if_conflict=True, interpret_none_as_val=True)
-            #self.logger.debug(f"{config_dict=}")
             self.update_config(config_dict)
             self.save_config()
+        return
 
     def init_from_path(self, path:str=None, **kwargs):
         self.load(path, **kwargs)
@@ -317,7 +399,7 @@ class Labhandler(object):
         setattr(obj, 'logger', self.logger)
 
         for method_name in self._attach_methods_to_parent:
-            if hasattr(obj, method_name): continue #method already exists --> do not overwrite it!
+            if hasattr(obj, method_name): continue #method already exist --> do not overwrite it!
             method = getattr(self.__class__, method_name, None)
 
             if isinstance(method, property):
@@ -330,28 +412,32 @@ class Labhandler(object):
 
     def __init__(self, ref=None, **kwargs):
         self.logger.debug(f"{self.__dict__=}")
-        self.load_lab(kwargs.get('lab_path', None))
-
+        self.load_from_lab(kwargs.get('lab_path', None))
         self.logger.debug(f"{ref=}")
 
         self._datetime_init=get_datetime()
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
-        self._handled_objects = []
+
+        self._handled_parameters=[]
+        self._handled_attributes=[]
+
         self._attach_methods_to_parent = ['get_overview','get_config', 'get_filtered_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
-
-
-        if isinstance(ref, dict): #init from locals dict
-            if all([key in ref for key in ['self']]):
-                self.logger.debug(f"init from locals")
-                self.init_from_parent(ref, **kwargs)
-          
-        elif isinstance(ref, str):
+        if isinstance(ref, str):
             if Path(ref).exists():
                 self.init_from_path(ref, **kwargs)
-        
 
+
+        # if isinstance(ref, dict): #init from locals dict
+        #     if all([key in ref for key in ['self']]):
+        #         self.logger.debug(f"init from locals")
+        #         self.init_from_parent(ref, **kwargs)
+          
+        # elif isinstance(ref, str):
+        #     if Path(ref).exists():
+        #         self.init_from_path(ref, **kwargs)
+        
         return
 
     def get_overview(self, keypaths:list=[]) -> pd.DataFrame:
@@ -434,15 +520,26 @@ class Labhandler(object):
 
         config_dict.update(self.get_filtered_config(self.__dict__))
 
-        for object_dict in self._handled_objects:
+        for handle_dict in self._handled_parameters+self._handled_attributes:
+            value=getattr(self, handle_dict['key'], None)
+            handle_config=get_config_from_handle(value=value,**handle_dict)
+            
+            if isinstance(handle_config, list):
+                handle_config=[self.get_filtered_config(o) for o in handle_config]
+            elif isinstance(handle_config, dict):
+                handle_config=self.get_filtered_config(handle_config)
 
-            object_config_dict=get_labh_dict_from_object(**object_dict)
-            if isinstance(object_config_dict, list):
-                object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
-            elif isinstance(object_config_dict, dict):
-                object_config_dict=self.get_filtered_config(object_config_dict)
+            config_dict[handle_dict['key']]=handle_config
 
-            config_dict[object_dict['var_name']]=object_config_dict
+        # for object_dict in self._handled_objects:
+
+        #     object_config_dict=get_labh_dict_from_object(**object_dict)
+        #     if isinstance(object_config_dict, list):
+        #         object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
+        #     elif isinstance(object_config_dict, dict):
+        #         object_config_dict=self.get_filtered_config(object_config_dict)
+
+        #     config_dict[object_dict['var_name']]=object_config_dict
 
         return config_dict
 
@@ -464,9 +561,11 @@ class Labhandler(object):
         set_yaml(self.config,f"{self._path}/config.yaml")
     
     def save_files(self):
-        for key, val in self.config.items():
-            if is_labh_reference(val, LABH_FILE_KEYS):
-                save_labh_file(the_object=getattr(self,key,None), path=self._path, **val)
+
+        for key, file_dict in self.config.items():
+            if is_labh_reference(file_dict, LABH_FILE_KEYS):
+                save_pickle(value=getattr(self,key,None), path=self._path, **file_dict)
+    
 
     def save(self):
         os.makedirs(self._path, exist_ok=True)
@@ -474,10 +573,94 @@ class Labhandler(object):
         self.save_config()
         self.save_files()
 
-    def handle_kwargs(self, kwargs:dict) -> dict:
-        self.logger.debug(f"{kwargs=}")
+    def handle_parent(self, locals:dict):
 
-        return update_dict()
+        if hasattr(self, '_parent'): self.logger.warning(f"A parent was already attached.")
+
+        ref=locals.pop('ref', None)
+        label=locals.pop('label', None)
+        self._parent=locals.pop('self', None)
+        del locals
+
+        # self._handled_objects=[] #reset handled objects, as they cause mutable default arguments over various reinitializations
+        # self.logger.debug(f"resetted {self._handled_objects=} ")
+
+        self.load(ref=ref, obj=self._parent, label=label)
+
+        #Attach labhandler attributes to parent
+        for k,v in vars(self).items():
+            if hasattr(self._parent, k):
+                self.logger.warning(f"Attribute '{k}' already exists in parent. Skipping attachment.")
+                continue
+            #if (k in locals): continue
+            setattr(self._parent, k, v)
+        
+        #Attach labhandler methods to parent
+        self._attach_methods_to_parent = [
+            'get_config', 'get_filtered_config', 'update_config', #config methods
+            'save', 'save_config','save_files', #save methods
+            'get_overview', '__repr__', #utility methods
+            'config','path','class_path','_path','_class_path','is_saved','df' #property methods
+            ]
+
+        for method_name in self._attach_methods_to_parent:
+            if hasattr(self._parent, method_name):
+                self.logger.warning(f"Method '{method_name}' already exists in parent. Skipping attachment.")
+                continue
+
+            method = getattr(self.__class__, method_name, None)
+
+            if isinstance(method, property):
+                setattr(self._parent.__class__, method_name, method)
+
+            if callable(method):
+                setattr(self._parent, method_name, MethodType(method, self._parent))
+
+        return
+    
+    def handle_parameter(self, locals:dict, key:str, save_file:bool=False, save_global:bool=False, **kwargs) -> Any:
+
+        parameter=locals.pop(key, None); del locals
+
+        if is_empty(parameter):
+            parameter=self.config.get(key, None)
+            
+        if is_empty(parameter):
+            self.logger.debug(f"'{key}' of {self._parent} is empty.")
+            return None #dont handle empty parameters
+        
+        if isinstance(parameter, list):
+            pop_len=len(self._handled_parameters)
+            parameter=[self.handle_parameter({key: v}, key, save_file, save_global, **kwargs) for v in parameter]
+            while len(self._handled_parameters)>pop_len: self._handled_parameters.pop() #pop back to initial lenght to avoid duplicates
+
+        elif is_labh_dict(parameter, LABH_FILE_KEYS):
+            parameter=load_labh_file_from_dict(parameter, self._path)
+        
+        elif is_labh_reference(parameter, LABH_LOCAL_KEYS):
+            parameter=init_from_labh_reference(parameter, **kwargs)
+
+            if is_labh_reference(parameter, LABH_GLOBAL_KEYS):
+                if parameter.is_saved and save_global:
+                    warnings.warn(f"{key} is already saved globally. Setting save_global to False.")
+                    save_global=False
+
+            if is_labh_datahandle_reference(parameter):
+                kwargs.update(parameter.config)
+                parameter=parameter.df
+
+        else:
+            if save_global:
+                warnings.warn(f"{key} ({type(parameter)=}) can not be saved globally. Setting save_global to False.")
+                save_global=False
+        
+        self._handled_parameters+=[dict(key=key, save_file=save_file, save_global=save_global, **kwargs)]
+        return parameter 
+    
+    def handle_attribute(self, key:str, **kwargs) -> None:
+        self._handled_attributes+=[dict(key=key, save_file=True, save_global=False, **kwargs)]
+        return 
+
 
     def handle_object(self, locals:dict, var_name:str, save_file:bool=False, save_global:bool=False, **kwargs):
         """
