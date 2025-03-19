@@ -35,7 +35,7 @@ def is_empty(x):
     if x is None: return True
     if isinstance(x, pd.DataFrame): return x.empty
     if isinstance(x, (list, tuple, set, dict)): return len(x)==0
-    return not bool(x)
+    return x is None
 
 def is_labh_dict(the_input, required_keys=LABH_GLOBAL_KEYS) -> bool:
     if not isinstance(the_input, dict): return False
@@ -188,7 +188,20 @@ def get_labh_dict_from_object(the_object:object, var_name:str, save_file:bool=Fa
 
 ###################
 
-def save_pickle(path:str, filename:str, type:str, value:Any, overwrite:bool=True, **kwargs) -> None:
+def load_pickle(filename:str, path:str='.', type:str=None, **kwargs) -> Any:
+    load_path=(Path(path)/filename).as_posix()
+
+    if not os.path.exists(load_path):
+        logging.debug(f"{load_path} not found. Return 'None'.")
+        return None
+
+    if type=='DataFrame':
+        return pd.read_pickle(load_path)
+    else:
+        with open(load_path, "rb") as f:
+            return pickle.load(f)
+
+def save_pickle(value:Any, filename:str, path:str='.', type:str=None, overwrite:bool=True, **kwargs) -> None:
     save_path=(Path(path)/filename).as_posix()
 
     if (os.path.exists(save_path)) and (not overwrite): return #do not overwrite existing files
@@ -213,8 +226,8 @@ def get_config_from_file(key:str, value:object, **kwargs) -> dict:
         config['n_rows'] = len(value)
 
     elif config['type']=='ndarray':
-        config['shape'] = value.shape
-        config['dtype'] = value.dtype
+        config['shape'] = str(value.shape)
+        config['dtype'] = str(value.dtype)
     
     elif config['type']=='Node':
         config['size'] = value.size
@@ -343,6 +356,9 @@ class Labhandler(object):
         if self.is_saved: #update label if it was renamed
             fn=get_filename_from_id(self._class_path, self.id, warn=True)
             label=label or re.match(ID_PATTERN, fn).group(2)
+        
+        self.logger.debug(f"{label=}")
+        self.logger.debug(f"{getattr(self, 'label', None)=}")
 
         self.label = label or getattr(self, 'label', None) or self.class_parts[-1]
         self._name=f"{self.id:04d}_{self.label}"
@@ -421,18 +437,26 @@ class Labhandler(object):
         self._handled_parameters=[]
         self._handled_attributes=[]
 
-        self._attach_methods_to_parent = ['get_overview','get_config', 'get_filtered_config', 'save', 'save_config','save_files','update_config','__repr__','config','path','class_path','_path','_class_path','is_saved','df']
+        self._handled_objects=[] #legacy
+
+        self._attach_methods_to_parent = [
+            'get_config', 'get_filtered_config', 'update_config', #config methods
+            'save', 'save_config','save_files','save_attribute', #save methods
+            'get_overview', '__repr__', #utility methods
+            'config','path','class_path','_path','_class_path','is_saved','df' #property methods
+            ]
+
         self._config_exclude_keys = ['labh','logger','df','model','data']+self._attach_methods_to_parent
 
         if isinstance(ref, str):
             if Path(ref).exists():
                 self.init_from_path(ref, **kwargs)
-
-
-        # if isinstance(ref, dict): #init from locals dict
-        #     if all([key in ref for key in ['self']]):
-        #         self.logger.debug(f"init from locals")
-        #         self.init_from_parent(ref, **kwargs)
+        
+        elif isinstance(ref, dict): #init from parents locals
+            if all([key in ref for key in ['self']]):
+                self.logger.debug(f"init from locals")
+                self.handle_parent(ref)
+                #self.init_from_parent(ref, **kwargs)
           
         # elif isinstance(ref, str):
         #     if Path(ref).exists():
@@ -531,15 +555,15 @@ class Labhandler(object):
 
             config_dict[handle_dict['key']]=handle_config
 
-        # for object_dict in self._handled_objects:
+        for object_dict in self._handled_objects:
 
-        #     object_config_dict=get_labh_dict_from_object(**object_dict)
-        #     if isinstance(object_config_dict, list):
-        #         object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
-        #     elif isinstance(object_config_dict, dict):
-        #         object_config_dict=self.get_filtered_config(object_config_dict)
+            object_config_dict=get_labh_dict_from_object(**object_dict)
+            if isinstance(object_config_dict, list):
+                object_config_dict=[self.get_filtered_config(o) for o in object_config_dict]
+            elif isinstance(object_config_dict, dict):
+                object_config_dict=self.get_filtered_config(object_config_dict)
 
-        #     config_dict[object_dict['var_name']]=object_config_dict
+            config_dict[object_dict['var_name']]=object_config_dict
 
         return config_dict
 
@@ -558,22 +582,51 @@ class Labhandler(object):
         return
 
     def save_config(self):
+        if not self.is_saved:
+            self.logger.debug(f"{self} is not saved. Can not save config.")
+            return
         set_yaml(self.config,f"{self._path}/config.yaml")
     
+    def save_attribute(self, key:str, **kwargs) -> None:
+        if not self.is_saved: 
+            self.logger.debug(f"{self} is not saved. Can not save attribute '{key}'.")
+            return
+
+        if key not in self.config: #attribute is not handled yet
+            self.handle_attribute(key, **kwargs)
+
+        handle_config=self.config[key]
+
+        value=getattr(self, key, None)
+        if is_empty(value):
+            self.logger.warning(f"Attribute '{key}' is empty. Skipping saving.")
+            return
+
+        save_pickle(value, path=self._path, **handle_config)
+        return
+  
     def save_files(self):
+        if not self.is_saved:
+            self.logger.debug(f"{self} is not saved. Can not save files.")
+            return
 
-        for key, file_dict in self.config.items():
-            if is_labh_reference(file_dict, LABH_FILE_KEYS):
-                save_pickle(value=getattr(self,key,None), path=self._path, **file_dict)
+        for key, handle_config in self.config.items():
+            if is_labh_reference(handle_config, LABH_FILE_KEYS):
+                value=getattr(self,key,None)
+
+                if is_empty(value):
+                    self.logger.debug(f"Attribute '{key}' is empty. Skipping.")
+                    continue
+
+                save_pickle(value=value, path=self._path, **handle_config)
     
-
     def save(self):
         os.makedirs(self._path, exist_ok=True)
 
         self.save_config()
         self.save_files()
 
-    def handle_parent(self, locals:dict):
+    def handle_parent(self, locals:dict) -> None:
 
         if hasattr(self, '_parent'): self.logger.warning(f"A parent was already attached.")
 
@@ -589,23 +642,18 @@ class Labhandler(object):
 
         #Attach labhandler attributes to parent
         for k,v in vars(self).items():
-            if hasattr(self._parent, k):
-                self.logger.warning(f"Attribute '{k}' already exists in parent. Skipping attachment.")
+            if not is_empty(getattr(self._parent, k, None)):
+                self.logger.debug(f"Attribute already exists in {self._parent.__class__.__name__}. {k=} {v=}\tSkipping attachment.")
                 continue
             #if (k in locals): continue
             setattr(self._parent, k, v)
         
         #Attach labhandler methods to parent
-        self._attach_methods_to_parent = [
-            'get_config', 'get_filtered_config', 'update_config', #config methods
-            'save', 'save_config','save_files', #save methods
-            'get_overview', '__repr__', #utility methods
-            'config','path','class_path','_path','_class_path','is_saved','df' #property methods
-            ]
+
 
         for method_name in self._attach_methods_to_parent:
             if hasattr(self._parent, method_name):
-                self.logger.warning(f"Method '{method_name}' already exists in parent. Skipping attachment.")
+                self.logger.debug(f"Method '{method_name}' already exists in parent. Skipping attachment.")
                 continue
 
             method = getattr(self.__class__, method_name, None)
@@ -658,9 +706,24 @@ class Labhandler(object):
         return parameter 
     
     def handle_attribute(self, key:str, **kwargs) -> None:
+
+        if key in self.config:
+            handle_config=copy.deepcopy(self.config[key])
+
+            if is_labh_reference(handle_config, LABH_FILE_KEYS):
+                handle_config.update(kwargs)
+                value=load_pickle(path=self._path, **handle_config)
+
+                if not is_empty(value):
+                    setattr(self._parent, key, value)
+                    self.logger.debug(f"Loaded attribute '{key}' from {self._path} and set to {self._parent=}")
+
         self._handled_attributes+=[dict(key=key, save_file=True, save_global=False, **kwargs)]
         return 
 
+    def handle_attributes(self, keys:List[str], **kwargs) -> None:
+        for key in keys: self.handle_attribute(key)
+        return
 
     def handle_object(self, locals:dict, var_name:str, save_file:bool=False, save_global:bool=False, **kwargs):
         """
