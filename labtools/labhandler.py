@@ -67,6 +67,9 @@ def init_from_labh_dict(the_dict, **kwargs):
     assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
     class_name=the_dict['class_parts'][-1]
 
+    # if class_name=='DataFrame':
+    #     class_name=''
+
     if the_dict.get('class_parts', None) == ['FinetuningExperiment', 'InjectionExperiment']:
         print(f"{the_dict=}")
 

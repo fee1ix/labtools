@@ -22,6 +22,7 @@ def print_prompt_messages(prompt_messages):
         print(message['content'], end='\n\n')
 
 
+
 def print_multicol(cols):
     col_width=math.floor(100/len(cols))
     html_content=""
