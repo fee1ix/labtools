@@ -241,8 +241,8 @@ def get_config_from_file(key:str, value:object, **kwargs) -> dict:
 
 def get_config_from_local(key: str, value:object, **kwargs) -> dict:
     config=dict()
-    config['class_parts']=get_class_parts(value)
-    config['module_path']=getattr(value,'__module__', None)
+    config['class_parts']=kwargs.get('class_parts', get_class_parts(value))
+    config['module_path']=kwargs.get('module_path',getattr(value,'__module__', None))
 
     # if local is not saved, the id will be removed. So when reloading it is not tried to load a potential non-existing file/ other object
     if not getattr(value,'is_saved', True):
@@ -684,29 +684,26 @@ class Labhandler(object):
             pop_len=len(self._handled_parameters)
             parameter=[self.handle_parameter({key: v}, key, save_file, save_global, **kwargs) for v in parameter]
             while len(self._handled_parameters)>pop_len: self._handled_parameters.pop() #pop back to initial lenght to avoid duplicates
-
-        elif is_labh_dict(parameter, LABH_FILE_KEYS):
-            parameter=load_labh_file_from_dict(parameter, self._path)
         
-        elif is_labh_reference(parameter, LABH_LOCAL_KEYS):
-            parameter=init_from_labh_reference(parameter, **kwargs)
-
-            if is_labh_reference(parameter, LABH_GLOBAL_KEYS):
-                if parameter.is_saved and save_global:
-                    warnings.warn(f"{key} is already saved globally. Setting save_global to False.")
-                    save_global=False
-
-            if is_labh_datahandle_reference(parameter):
-                kwargs.update(parameter.config)
-                parameter=parameter.df
-
         else:
-            if save_global:
-                warnings.warn(f"{key} ({type(parameter)=}) can not be saved globally. Setting save_global to False.")
-                save_global=False
-        
+            if is_labh_reference(parameter, LABH_LOCAL_KEYS):
+                parameter=init_from_labh_reference(parameter, **kwargs)
+
+                if is_labh_reference(parameter, LABH_GLOBAL_KEYS):
+                    if parameter.is_saved and save_global:
+                        warnings.warn(f"{key} is already saved globally. Setting save_global to False.")
+                        save_global=False
+
+                if is_labh_datahandle_reference(parameter):
+                    kwargs.update(parameter.config)
+                    parameter=parameter.df
+            
+            elif is_labh_dict(parameter, LABH_FILE_KEYS):
+                kwargs.update(parameter)
+                parameter=load_labh_file_from_dict(parameter, self._path)
+
         self._handled_parameters+=[dict(key=key, save_file=save_file, save_global=save_global, **kwargs)]
-        return parameter 
+        return parameter
     
     def handle_attribute(self, key:str, **kwargs) -> None:
 
