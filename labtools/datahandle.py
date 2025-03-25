@@ -28,7 +28,7 @@ class Datahandle(object):
 
         if labh is not None:
             self.labh=labh(locals())
-            data_df=self.labh.handle_object(locals(),'data_df', save_file=True, overwrite=False)
+            data_df=self.labh.handle_parameter(locals(),'data_df', save_file=True, overwrite=False)
         
         if isinstance(data_df, pd.DataFrame):
             self.data_df = data_df.copy(); del data_df

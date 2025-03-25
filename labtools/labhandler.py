@@ -59,19 +59,13 @@ def is_labh_datahandle_reference(the_input):
     elif is_labh_object(the_input, LABH_LOCAL_KEYS) and ('Datahandle' in the_input.__dict__['class_parts']): return True
     return False
 
-
 def init_from_labh_object(the_object, **kwargs):
     return the_object
 
 def init_from_labh_dict(the_dict, **kwargs):
     assert is_labh_dict(the_dict, LABH_LOCAL_KEYS), f"{the_dict} is not a valid labhandler dictionary."
+
     class_name=the_dict['class_parts'][-1]
-
-    # if class_name=='DataFrame':
-    #     class_name=''
-
-    if the_dict.get('class_parts', None) == ['FinetuningExperiment', 'InjectionExperiment']:
-        print(f"{the_dict=}")
 
     if class_name not in globals():
         the_class = get_class(class_name,the_dict['module_path'])
@@ -91,16 +85,13 @@ def init_from_labh_dict(the_dict, **kwargs):
     #logging.debug(f"{filter_dict_keylist(the_dict, LABH_GLOBAL_KEYS)=}")
 
     kwargs.update(**the_dict)
-    if the_dict.get('class_parts', None) == ['FinetuningExperiment', 'InjectionExperiment']:
-        print(f"{kwargs=}")
+    logging.debug(f"{filter_dict_keylist(kwargs, LABH_GLOBAL_KEYS+['ref','label'])=}")
 
     the_object=the_class(**kwargs)
 
     # if the_dict.get('label', None) == 'RAG_CHUNKS':
     #     print(f"the_object.config={json.dumps(the_object.config, ensure_ascii=False, indent=2)}")
         
-
-
     return the_object
 
 def init_from_labh_reference(the_input, **kwargs):
@@ -430,9 +421,9 @@ class Labhandler(object):
         return
 
     def __init__(self, ref=None, **kwargs):
-        self.logger.debug(f"{self.__dict__=}")
+        #self.logger.debug(f"{self.__dict__=}")
         self.load_from_lab(kwargs.get('lab_path', None))
-        self.logger.debug(f"{ref=}")
+        #self.logger.debug(f"{ref=}")
 
         self._datetime_init=get_datetime()
         self._config_key_order = ['id','label', 'lab_name','class_parts','module_path']
@@ -636,25 +627,27 @@ class Labhandler(object):
         ref=locals.pop('ref', None)
         label=locals.pop('label', None)
         self._parent=locals.pop('self', None)
-        del locals
-
-        # self._handled_objects=[] #reset handled objects, as they cause mutable default arguments over various reinitializations
-        # self.logger.debug(f"resetted {self._handled_objects=} ")
-
+        local_kwargs=locals.pop('kwargs', {})
+        
         self.load(ref=ref, obj=self._parent, label=label)
 
         #Attach labhandler attributes to parent
         for k,v in vars(self).items():
-            if not is_empty(getattr(self._parent, k, None)):
-                self.logger.debug(f"Attribute already exists in {self._parent.__class__.__name__}. {k=} {v=}\tSkipping attachment.")
+
+            # if (k in local_kwargs) and (not is_empty(local_kwargs[k])):
+            #     self.logger.debug(f"Attribute {k=} already set in kwargs of {self._parent.__class__.__name__}.")# {v=}\tSkipping attachment.")
+            #     continue
+
+            if (k in locals) and (not is_empty(locals[k])):
+                self.logger.debug(f"Attribute {k=} already set in locals of {self._parent.__class__.__name__}.")# {v=}\tSkipping attachment.")
                 continue
-            #if (k in locals): continue
+
             setattr(self._parent, k, v)
-        
+        del locals
+
         #Attach labhandler methods to parent
-
-
         for method_name in self._attach_methods_to_parent:
+            
             if hasattr(self._parent, method_name):
                 self.logger.debug(f"Method '{method_name}' already exists in parent. Skipping attachment.")
                 continue
@@ -687,6 +680,7 @@ class Labhandler(object):
         
         else:
             if is_labh_reference(parameter, LABH_LOCAL_KEYS):
+                self.logger.debug(f"Parameter '{key}' is a local reference.")
                 parameter=init_from_labh_reference(parameter, **kwargs)
 
                 if is_labh_reference(parameter, LABH_GLOBAL_KEYS):
@@ -695,6 +689,7 @@ class Labhandler(object):
                         save_global=False
 
                 if is_labh_datahandle_reference(parameter):
+                    self.logger.debug(f"Parameter '{key}' is a Datahandle reference.")
                     kwargs.update(parameter.config)
                     parameter=parameter.df
             
@@ -814,12 +809,15 @@ class Labhandler(object):
     @property
     def df(self) -> pd.DataFrame:
 
-        for object_dict in self._handled_objects:
-            var_name=object_dict['var_name']
-            the_object=object_dict['the_object']
+        for handle_dict in self._handled_parameters+self._handled_attributes+self._handled_objects:
+            key=handle_dict['key']
+            val=getattr(self, key, None)
 
-            if isinstance(the_object, pd.DataFrame):
-                return getattr(self, var_name, pd.DataFrame()).copy()
+            if key.endswith('df') and isinstance(val, pd.DataFrame):
+                return getattr(self, key, pd.DataFrame()).copy()
+
+            # if isinstance(val, pd.DataFrame):
+            #     return val.copy()
 
         #warnings.warn(f"No DataFrame Object found in {self}")
         return
