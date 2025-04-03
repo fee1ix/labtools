@@ -62,3 +62,21 @@ def get_timestamp(a_datetime=None):
         a_datetime=get_datetime()
 
     return a_datetime.strftime(TIMESTAMP_FORMAT)
+
+def get_hms_timedelta(ts1: str, ts2: str) -> str:
+
+    for ts in [ts1, ts2]:
+        if not isinstance(ts, str):
+            return None
+
+    fmt = "%Y-%m-%d_%H-%M-%S"
+    dt1 = datetime.datetime.strptime(ts1, fmt)
+    dt2 = datetime.datetime.strptime(ts2, fmt)
+    
+    delta = abs(dt2 - dt1)
+    total_seconds = int(delta.total_seconds())
+    
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    return f"{hours:02}:{minutes:02}:{seconds:02}"
